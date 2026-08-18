@@ -45,6 +45,24 @@ uv run hyqsast /path/to/java/project --language java -o report.json
 # 加 --no-canonical 可只出完整报告
 ```
 
+## 自定义规则库
+
+规则库在 `src/hyqsast/cpg/taint_rules.yaml`。可以不改这个大文件，用**额外规则
+文件**（或目录）在它之上追加合并——适合批量适配 CodeQL 规则等场景：
+
+```bash
+uv run hyqsast /path/to/project --language java --rules rules/fastjson.yaml --rules rules/ -o report.json
+```
+
+```python
+result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.yaml"])
+```
+
+- 额外文件结构与内置 YAML 一致：`语言 → {sources, sinks, sanitizers, sink_excludes}`；
+  `sources/sinks/sanitizers` 是**子串**列表，`sink_excludes` 是**正则**。
+- 合并语义：按 `(语言, 区块, 类别)` **追加去重**，不覆盖内置规则。
+- 模板与 CodeQL 适配契约见 `examples/rules/`（`example.rules.yaml` + `README.md`）。
+
 ## 结果结构（`ScanResult`）
 
 ```jsonc

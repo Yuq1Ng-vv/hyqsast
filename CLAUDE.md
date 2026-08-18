@@ -97,7 +97,7 @@ source 只表示「有用户输入」，精确 vuln_type 由 sink 决定（如 `
 
 1. **新语言**：创建 `cpg/languages/<name>.py` 实现 `LanguageProvider`，在 `languages/__init__.py` 的 `_BUILDER` 注册一行即可。`parser.py` / `callgraph.py` 无需改动。契约见 `languages/base.py`。
 2. **新框架**：创建 `cpg/frameworks/<name>.py` 实现 `BaseFrameworkExtractor`，在 `frameworks/__init__.py` `_register()`。契约见 `frameworks/base.py`。
-3. **新漏洞类别 / 规则**：编辑 `cpg/taint_rules.yaml`（对应语言的 sources/sinks/sanitizers），并在 `schema.py` 的 `SEVERITY_MAP` 加一行严重级别。
+3. **新漏洞类别 / 规则**：编辑 `cpg/taint_rules.yaml`（对应语言的 sources/sinks/sanitizers），并在 `schema.py` 的 `SEVERITY_MAP` 加一行严重级别。不想动内置大文件时，可用 `scan(rules_paths=[...])` / CLI `--rules` 传额外规则文件或目录（在 `taint_rules.yaml` 之上按 `(语言,区块,类别)` 追加去重合并，见 `taint_loader.py` 的 `_merge`）。模板与 CodeQL 适配契约见 `examples/rules/`。
 
 ## 约定与风格
 

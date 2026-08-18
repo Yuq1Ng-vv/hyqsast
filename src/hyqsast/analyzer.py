@@ -66,6 +66,7 @@ class Analyzer:
         include_blind_spots: bool = True,
         use_cache: bool = True,
         severity_overrides: dict[str, str] | None = None,
+        rules_paths: str | Path | list[str | Path] | None = None,
     ) -> None:
         self.directory = Path(directory).resolve()
         if not self.directory.is_dir():
@@ -79,7 +80,9 @@ class Analyzer:
         self.severity_overrides = severity_overrides or {}
 
         self.parser = Parser(languages=[self.language])
-        self.taint_loader = TaintRuleLoader()
+        # rules_paths=None 时用内置 taint_rules.yaml；传入文件/目录则在
+        # 内置规则之上追加合并（见 TaintRuleLoader 的 merge 语义）
+        self.taint_loader = TaintRuleLoader(rules_paths=rules_paths)
         self.graph_builder = CPGGraphBuilder(self.parser, taint_loader=self.taint_loader)
         # 报告层读源码的按文件缓存（兜底 code / 提取整函数源码）
         self._src = _SourceCache()

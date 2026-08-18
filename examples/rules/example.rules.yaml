@@ -1,0 +1,70 @@
+# example.rules.yaml — 额外规则文件模板（可直接用 --rules 加载）
+#
+# 结构与内置 taint_rules.yaml 完全一致：`语言 → {sources, sinks, sanitizers, sink_excludes}`
+# 本文件不会覆盖内置规则，而是「追加合并」——同一 (语言, 区块, 类别) 的模式
+# 会追加到内置列表并去重。
+#
+# 用法:
+#   uv run hyqsast /path/to/project --language java --rules examples/rules/example.rules.yaml -o report.json
+#   uv run python -c "from hyqsast import scan; scan('/p', language='java', rules_paths=['examples/rules/example.rules.yaml'])"
+
+java:
+  # ── 1. 新增 sink（最常见的场景）───────────────────────────────────────
+  # CodeQL 里 `node.asExpr().(MethodAccess).getMethod().getName() = "parseObject"`
+  # 这类谓词，适配成「真实代码里出现的字面量」，放到对应漏洞类别的 sinks 下。
+  # 匹配是【子串匹配】（pat in text），不是正则；务必带上 `(` 提高精确度，
+  # 避免裸 `.parse(` 命中无关调用。调用表达式最多 120 字符，超长模式匹配不上。
+  #
+  # ⚠️ 一个区块键（sources / sinks / sanitizers）在一份文件里只能出现一次——
+  #    YAML 重复键后者覆盖前者，会静默丢规则。新增类别往对应区块里追加条目即可。
+  sinks:
+    deserialization:
+    - Fastjson.parseObject(
+    - JSON.parseObject(
+    - Json.parse(
+    - .readValue(          # 注意：.readValue( 较泛，会命中 Jackson ObjectMapper 等
+    email_hijack:
+    - sendMessage(
+    - MimeMessageHelper.setTo(
+    - .setFrom(
+
+  # ── 2. 新增 source ────────────────────────────────────────────────────
+  sources:
+    ssrf:
+    - .getServerName(      # 从请求里取的目标主机名 → SSRF source
+    - .getRequestURL(
+    - .getRequestURI(
+    code_injection:
+    - .getParameter(       # 请求参数进入表达式求值 → 代码注入 source
+    email_hijack:
+    - .getParameter(
+    - .getQueryString(
+
+  # ── 3. 新增 sanitizer（降误报：路径上命中即视为已消毒）────────────────
+  # CodeQL 的 `isSanitizer` / taint step 排除，对应这里的子串。
+  # 命中后 finding 会标 sanitized: true（不会消失，只是标记）。
+  sanitizers:
+    sql_injection:
+    - setString           # PreparedStatement.setString 参数化 → 已消毒
+    - setObject
+    xss:
+    - HtmlUtils.htmlEscape
+    - ESAPI.encoder()
+    - StringEscapeUtils.escapeHtml
+    email_hijack:
+    - Validate.        # javax.validation 白名单校验
+
+  # ── 4. 新增 sink_excludes（正则！剔除含 sink 子串但无危害的调用）──────
+  # 这一节是【正则】（re.search），其余全是子串。示例：内置已有
+  # `.toString\s*\(`、`\.getMessage\s*\(`，这里加两个典型的：
+  sink_excludes:
+  - '\.equals\s*\('       # str.equals(...) 不含可注入的执行语义
+  - '\.hashCode\s*\('
+  - '\.getId\s*\('        # 常用 getter 命中泛化 sink 时的豁免
+
+# ── 5. 全新漏洞类别（引擎自动发现，零代码改动）────────────────────────
+# 只要在同一语言下加三节同名的类别即可；类别名会直接成为 vuln_type。
+# 额外两步在 Python 代码里（schema.py）：
+#   SEVERITY_MAP["email_hijack"] = "high"           # 严重级别
+#   VULN_DISPLAY_NAMES["email_hijack"] = "邮箱劫持"  # 规范版报告中文名
+# （这两处不写也能跑，只是 severity 归到默认、规范版显示原始类别名）

@@ -25,6 +25,13 @@ def main(argv: list[str] | None = None) -> int:
         "--language", default=None, help="java / python / javascript（缺省自动探测）"
     )
     parser.add_argument("--framework", default=None, help="框架提取器名（spring / flask ...）")
+    parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="额外规则文件或目录（可多次指定，*.yaml 在内置规则之上追加合并）",
+    )
     parser.add_argument("--max-findings", type=int, default=50, help="每类别最多 finding 数")
     parser.add_argument("--output", "-o", default=None, help="JSON 报告输出路径")
     parser.add_argument(
@@ -43,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         max_findings_per_category=args.max_findings,
         include_blind_spots=not args.no_blind_spots,
         use_cache=not args.no_cache,
+        rules_paths=args.rules or None,
     )
 
     s = result.summary

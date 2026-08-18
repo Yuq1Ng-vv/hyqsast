@@ -25,6 +25,7 @@ def scan(
     include_blind_spots: bool = True,
     use_cache: bool = True,
     severity_overrides: dict[str, str] | None = None,
+    rules_paths: str | Path | list[str | Path] | None = None,
 ) -> ScanResult:
     """扫描一个源码目录，返回接口 / 漏洞类型 / 调用链的结构化结果。
 
@@ -36,6 +37,8 @@ def scan(
         include_blind_spots: 是否附带「无已知污点源的接口」盲区清单。
         use_cache: 是否复用 CPG 图缓存（``~/.cache/hyqsast/cpg/``）。
         severity_overrides: 覆盖默认的 vuln_type → severity 映射。
+        rules_paths: 额外规则文件（或目录，自动 glob ``*.yaml``）。在内置
+            ``taint_rules.yaml`` 之上按 ``(语言, 区块, 类别)`` 追加去重合并。
 
     Returns:
         :class:`ScanResult`，可用 ``.to_json(path)`` 落盘。
@@ -48,4 +51,5 @@ def scan(
         include_blind_spots=include_blind_spots,
         use_cache=use_cache,
         severity_overrides=severity_overrides,
+        rules_paths=rules_paths,
     ).run()

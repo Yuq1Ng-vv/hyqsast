@@ -37,7 +37,7 @@ class LanguageTaintRules:
 
 
 class TaintRuleLoader:
-    """Load and query taint rules from a YAML file.
+    """Load and query taint rules from one or more YAML files.
 
     Usage::
 
@@ -46,25 +46,80 @@ class TaintRuleLoader:
 
         for cat_name, cat in rules.categories.items():
             print(f"{cat_name}: {len(cat.sources)} sources, {len(cat.sinks)} sinks")
+
+    Multi-file support: pass ``rules_paths`` as a single file, a list of files,
+    or a directory (``*.yaml`` / ``*.yml`` are globbed and sorted).  Extra
+    files merge ON TOP of the built-in ``taint_rules.yaml``: for each
+    ``(language, section, category)`` the pattern lists are appended and
+    deduplicated, so custom/CodeQL-adapted rules can live in their own files
+    without editing the 4600-line built-in rule base.
     """
 
-    def __init__(self, rules_path: str | Path | None = None) -> None:
-        if rules_path is None:
-            rules_path = Path(__file__).resolve().parent / "taint_rules.yaml"
-        self._path = Path(rules_path)
+    def __init__(self, rules_paths: str | Path | list[str | Path] | None = None) -> None:
+        # 内置 taint_rules.yaml 永远在首位：额外规则只负责「追加」，不替换内置。
+        builtin = Path(__file__).resolve().parent / "taint_rules.yaml"
+        if rules_paths is None:
+            rules_paths = [builtin]
+        else:
+            extra = [rules_paths] if isinstance(rules_paths, (str, Path)) else list(rules_paths)
+            rules_paths = [builtin, *extra]
+        self._paths = self._resolve_paths(rules_paths)
         self._data: dict = {}
         self._load()
 
-    def _load(self) -> None:
-        """Load YAML and validate structure (BUG 24)."""
-        try:
-            with open(self._path, encoding="utf-8") as fh:
-                self._data = yaml.safe_load(fh) or {}
-        except FileNotFoundError:
-            self._data = {}
-            return
+    @staticmethod
+    def _resolve_paths(rules_paths: str | Path | list[str | Path]) -> list[Path]:
+        """展开为文件列表：目录自动 glob ``*.yaml`` / ``*.yml``（排序）。"""
+        if isinstance(rules_paths, (str, Path)):
+            rules_paths = [rules_paths]
+        files: list[Path] = []
+        for raw in rules_paths:
+            path = Path(raw)
+            if path.is_dir():
+                files.extend(sorted(path.glob("*.yaml")) + sorted(path.glob("*.yml")))
+            else:
+                files.append(path)
+        return files
 
+    def _load(self) -> None:
+        """Load every source file, merge, and validate structure (BUG 24)."""
+        for path in self._paths:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    chunk = yaml.safe_load(fh) or {}
+            except FileNotFoundError:
+                logger.warning("规则文件不存在，跳过: %s", path)
+                continue
+            if isinstance(chunk, dict):
+                self._merge(chunk)
+            else:
+                logger.warning("规则文件顶层应为 dict，忽略: %s", path)
         self._validate()
+
+    def _merge(self, chunk: dict) -> None:
+        """把一份 YAML 合并进全局规则：同类别模式追加 + 去重。"""
+        for lang, lang_data in chunk.items():
+            if not isinstance(lang_data, dict):
+                continue
+            target_lang = self._data.setdefault(lang, {})
+            for section in ("sources", "sinks", "sanitizers"):
+                section_data = lang_data.get(section)
+                if not isinstance(section_data, dict):
+                    continue
+                target_section = target_lang.setdefault(section, {})
+                for cat, patterns in section_data.items():
+                    if not isinstance(patterns, list):
+                        continue
+                    merged = target_section.setdefault(cat, [])
+                    for pat in patterns:
+                        if pat not in merged:
+                            merged.append(pat)
+            excludes = lang_data.get("sink_excludes", [])
+            if isinstance(excludes, list):
+                merged = target_lang.setdefault("sink_excludes", [])
+                for pat in excludes:
+                    if pat not in merged:
+                        merged.append(pat)
 
     def _validate(self) -> None:
         """Check YAML structure and warn about issues."""
