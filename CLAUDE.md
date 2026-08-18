@@ -120,3 +120,4 @@ source 只表示「有用户输入」，精确 vuln_type 由 sink 决定（如 `
 - 完整用法与结果结构示例见 `README.md`。
 - 最小可运行示例见 `examples/scan_demo.py`。
 - 已知限制与优化路线图（P0/P1 已完成、P2/P3 待做）见 `docs/TODO.md`。
+- 面向汇报的通俗进展介绍稿（给混合听众讲设计/实现/目的）见 `docs/项目进展介绍.md`。
