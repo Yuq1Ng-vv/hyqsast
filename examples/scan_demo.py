@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from hyqsast import scan
 
@@ -16,7 +17,13 @@ def main() -> int:
     directory = sys.argv[1] if len(sys.argv) > 1 else "."
     language = sys.argv[2] if len(sys.argv) > 2 else None
 
-    result = scan(directory, language=language)
+    # 自动加载 cwd 下 rules/ 额外规则目录（存在才传，如 examples/rules 模板）
+    rules_dir = Path.cwd() / "rules"
+    result = scan(
+        directory,
+        language=language,
+        rules_paths=[str(rules_dir)] if rules_dir.is_dir() else None,
+    )
 
     s = result.summary
     print(f"文件={s.files} 函数={s.functions} 接口={s.endpoints} "

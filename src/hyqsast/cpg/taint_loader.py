@@ -14,7 +14,9 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_VALID_LANGUAGES = {"python", "javascript", "java"}
+# php/go 目前引擎（parser/languages 适配器）尚未实现，规则已备好待用；
+# 加入白名单避免加载 rules/ 备用规则时报未知语言告警。
+_VALID_LANGUAGES = {"python", "javascript", "java", "php", "go"}
 _VALID_SECTIONS = {"sources", "sinks", "sanitizers", "sink_excludes"}
 
 

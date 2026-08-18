@@ -26,8 +26,10 @@ SEVERITY_MAP: dict[str, str] = {
     "xpath_injection": "critical",
     "xxe": "critical",
     "ldap_injection": "critical",
+    "nosql_injection": "critical",
     # 高危：服务端请求伪造 / 路径穿越 / 认证绕过 / 头注入 / 格式化串
     "ssrf": "high",
+    "cleartext_transmission": "high",
     "path_traversal": "high",
     "auth_bypass": "high",
     "header_injection": "high",
@@ -38,6 +40,7 @@ SEVERITY_MAP: dict[str, str] = {
     "crypto_weakness": "medium",
     "log_injection": "medium",
     "info_disclosure": "medium",
+    "hardcoded_secret": "medium",
     # 兜底：通用注入类别
     "injection_general": "medium",
 }
@@ -59,7 +62,9 @@ VULN_DISPLAY_NAMES: dict[str, str] = {
     "xpath_injection": "XPath 注入",
     "xxe": "XML 外部实体注入(XXE)",
     "ldap_injection": "LDAP 注入",
+    "nosql_injection": "NoSQL 注入",
     "ssrf": "SSRF 服务端请求伪造",
+    "cleartext_transmission": "明文传输敏感数据",
     "path_traversal": "路径穿越",
     "auth_bypass": "认证绕过",
     "header_injection": "响应头注入",
@@ -69,6 +74,7 @@ VULN_DISPLAY_NAMES: dict[str, str] = {
     "crypto_weakness": "弱加密",
     "log_injection": "日志注入",
     "info_disclosure": "信息泄露",
+    "hardcoded_secret": "硬编码密钥",
     "injection_general": "通用注入",
 }
 

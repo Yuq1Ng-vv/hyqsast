@@ -51,6 +51,8 @@ uv run hyqsast /path/to/java/project --language java -o report.json
 文件**（或目录）在它之上追加合并——适合批量适配 CodeQL 规则等场景：
 
 ```bash
+# 仓库根目录下存在 rules/ 时自动加载（零配置）；--rules 可显式覆盖
+uv run hyqsast /path/to/project --language java -o report.json
 uv run hyqsast /path/to/project --language java --rules rules/fastjson.yaml --rules rules/ -o report.json
 ```
 
@@ -61,7 +63,8 @@ result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.
 - 额外文件结构与内置 YAML 一致：`语言 → {sources, sinks, sanitizers, sink_excludes}`；
   `sources/sinks/sanitizers` 是**子串**列表，`sink_excludes` 是**正则**。
 - 合并语义：按 `(语言, 区块, 类别)` **追加去重**，不覆盖内置规则。
-- 模板与 CodeQL 适配契约见 `examples/rules/`（`example.rules.yaml` + `README.md`）。
+- 模板与 CodeQL 适配契约见 `examples/rules/`（`example.rules.yaml` + `README.md`）；
+  你的适配规则放仓库根目录 `rules/`（自动加载，契约见 `rules/README.md`）。
 
 ## 结果结构（`ScanResult`）
 

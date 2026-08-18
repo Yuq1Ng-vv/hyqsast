@@ -43,6 +43,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-cache", action="store_true", help="强制重建 CPG 图，忽略缓存")
     args = parser.parse_args(argv)
 
+    # 自动发现：cwd 下存在 rules/ 目录则默认加载（--rules 显式指定时优先生效）
+    rules_paths = args.rules or None
+    if not rules_paths:
+        auto = Path.cwd() / "rules"
+        if auto.is_dir():
+            rules_paths = [str(auto)]
+            print(f"自动加载额外规则目录: {auto}（用 --rules 可覆盖）")
+
     result = scan(
         directory=args.directory,
         language=args.language,
@@ -50,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         max_findings_per_category=args.max_findings,
         include_blind_spots=not args.no_blind_spots,
         use_cache=not args.no_cache,
-        rules_paths=args.rules or None,
+        rules_paths=rules_paths,
     )
 
     s = result.summary
