@@ -151,6 +151,9 @@ class Finding:
     call_chain: list[ChainStep] = field(default_factory=list)
     sanitizers: list[str] = field(default_factory=list)
     sanitized: bool = False
+    # P1-5: 相同 (source, sink) 的多类别候选被聚合后，其余类别收在这里。
+    # 主 vuln_type 取严重级别最高、sink 模式最具体者。
+    related_categories: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -194,6 +197,9 @@ class ScanSummary:
     findings: int = 0
     sinks: int = 0
     blind_spots: int = 0
+    # P0-2: 每个漏洞类别因 max_findings_per_category 被截断的候选数。
+    # 值是保守下限——外层 BFS 提前终止时未扫描到的部分不计入。
+    truncated_categories: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass

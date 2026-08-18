@@ -65,6 +65,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"文件: {s.files}  函数: {s.functions}  接口: {s.endpoints}  "
           f"finding: {s.findings}  sink: {s.sinks}  盲区: {s.blind_spots}")
 
+    # P0-2: 截断可见化 —— 让用户知道某类别还有更多候选被上限吞掉
+    if s.truncated_categories:
+        detail = ", ".join(f"{k}+{v}" for k, v in sorted(s.truncated_categories.items()))
+        print(
+            f"⚠  {len(s.truncated_categories)} 个类别达到上限被截断（{detail}）；"
+            f"如需完整结果请用 --max-findings 提高（当前 {args.max_findings}）"
+        )
+
     if result.endpoints:
         print("\n── 接口 ──")
         for ep in result.endpoints:
@@ -90,8 +98,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _fmt_finding(f: Finding) -> str:
     sev = f.severity.upper()
+    related = f"  (相关: {','.join(f.related_categories)})" if f.related_categories else ""
     return (
-        f"  [{sev:8s}] {f.vuln_type}\n"
+        f"  [{sev:8s}] {f.vuln_type}{related}\n"
         f"    source: {f.source.code.strip()[:60]}  ({f.source.file_path}:{f.source.line})\n"
         f"    sink:   {f.sink.code.strip()[:60]}  ({f.sink.file_path}:{f.sink.line})\n"
         f"    chain:  {len(f.call_chain)} 步"

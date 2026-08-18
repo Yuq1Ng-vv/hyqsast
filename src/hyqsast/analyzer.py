@@ -20,6 +20,7 @@ from hyqsast.cpg.frameworks import available_frameworks, get_extractor
 from hyqsast.cpg.graph import (
     EDGE_CALLS,
     EDGE_DATA_FLOW,
+    NODE_ASSIGNMENT,
     NODE_CALL_SITE,
     NODE_FUNCTION,
     CPGGraphBuilder,
@@ -52,6 +53,20 @@ _LANGUAGE_FRAMEWORKS: dict[str, list[str]] = {
 
 # 单次扫描每个漏洞类别最多产出的 finding 数（防止大型项目输出爆炸）
 _DEFAULT_MAX_FINDINGS_PER_CATEGORY = 50
+
+# P1-4: 「字符串模板」型注入 sink —— 危险载荷（SQL/命令/表达式串）只可能
+# 出现在第一个参数，其余参数位是绑定/参数（如 ``query(sql, params)``），
+# 污点流到这些位置不算语句注入，做位置门控。其余类别（xss/ssrf/nosql/
+# ldap/...）载荷位置不固定，不做门控。
+_SINK_STR_TEMPLATE_CATS: frozenset[str] = frozenset(
+    {
+        "sql_injection",
+        "command_injection",
+        "code_injection",
+        "xpath_injection",
+        "ssti",
+    }
+)
 
 
 class Analyzer:
@@ -86,6 +101,8 @@ class Analyzer:
         self.graph_builder = CPGGraphBuilder(self.parser, taint_loader=self.taint_loader)
         # 报告层读源码的按文件缓存（兜底 code / 提取整函数源码）
         self._src = _SourceCache()
+        # P0-2: 被 max_findings_per_category 截断的类别计数（_build_findings 填充）
+        self._truncated_categories: dict[str, int] = {}
 
     # ── 入口 ────────────────────────────────────────────────────────────
 
@@ -172,6 +189,8 @@ class Analyzer:
         findings: list[Finding] = []
         seen: set[tuple[str, str, str, str]] = set()
         per_category: dict[str, int] = defaultdict(int)
+        # P0-2: 记录每个类别因上限被跳过的候选数（供截断可见化）
+        skipped: dict[str, int] = defaultdict(int)
 
         for src in source_ids:
             if per_category and all(
@@ -181,7 +200,15 @@ class Analyzer:
             for node_ids, edge_types in self._bfs_to_sink(src, sink_set):
                 for cat in self._sink_categories(node_ids[-1]):
                     if per_category.get(cat, 0) >= self.max_findings_per_category:
+                        skipped[cat] += 1
                         continue
+                    # P1-4: 字符串模板型注入的位置门控 —— 污点在参数绑定位
+                    # （如 ``query(sql, tainted_params)`` 的第二个实参）不算
+                    # 语句注入命中；确定不了位置时放行，保持高召回。
+                    if cat in _SINK_STR_TEMPLATE_CATS:
+                        taint_pos = self._tainted_arg_position(node_ids)
+                        if taint_pos is not None and taint_pos >= 1:
+                            continue
                     finding = self._ids_to_finding(node_ids, edge_types, cat)
                     if finding is None:
                         continue
@@ -198,8 +225,69 @@ class Analyzer:
                     per_category[cat] += 1
                     findings.append(finding)
 
-        findings.sort(key=lambda f: (f.vuln_type, f.sink.file_path, f.sink.line))
-        return findings
+        # P0-2: 把截断计数暴露给汇总层；0 的类别不保留
+        self._truncated_categories = {k: v for k, v in skipped.items() if v > 0}
+
+        # P1-5: 相同 (src,sink) 的多类别候选合并为一条主 finding
+        return self._aggregate_multi_category(findings)
+
+    def _aggregate_multi_category(self, findings: list[Finding]) -> list[Finding]:
+        """P1-5: 把相同 (source, sink) 的多类别 finding 合并为一条主 finding。
+
+        同一 source → 同一 sink 的路径往往同时命中多个类别（如
+        ``jdbc.queryForObject(sql, ...)`` 同时匹配 sql_injection 和
+        code_injection），旧实现产出多条同位置 finding 造成噪音。合并规则：
+
+        - 主类别取严重级别最高者；
+        - 同级用「该类别在该 sink 表达式上最长匹配的模式长度」裁定 ——
+          更长模式更具体（``.queryForObject(`` > ``.query(``），
+          ``sql_injection`` 因而胜出 ``code_injection``；
+        - 其余类别按严重级别降序收进 ``related_categories``。
+        """
+        if not findings:
+            return []
+        groups: dict[tuple[str, int, str, int], list[Finding]] = defaultdict(list)
+        for f in findings:
+            key = (f.source.file_path, f.source.line, f.sink.file_path, f.sink.line)
+            groups[key].append(f)
+
+        out: list[Finding] = []
+        for group in groups.values():
+            if len(group) == 1:
+                out.append(group[0])
+                continue
+            ranked = sorted(
+                group,
+                key=lambda f: (
+                    -_severity_rank(f.severity),
+                    -self._sink_specificity(f.sink),
+                    f.vuln_type,
+                ),
+            )
+            main = ranked[0]
+            main.related_categories = [f.vuln_type for f in ranked[1:]]
+            out.append(main)
+        out.sort(key=lambda f: (f.vuln_type, f.sink.file_path, f.sink.line))
+        return out
+
+    def _sink_specificity(self, sink: NodeRef) -> int:
+        """返回 sink 类别中在该 sink 表达式上最长匹配模式的长度（更具体→更大）。
+
+        BUG 39: 匹配前模式也要小写 —— 文本已 ``lower()`` 而模式仍是原样时，
+        ``Object(`` 永远匹配不上 ``queryforobject(``，导致 sql_injection
+        （``.queryForObject(``）反而输给 code_injection（``Object(``）。
+        """
+        rules = self.taint_loader.rules_for(self.language)
+        category = rules.categories.get(sink.category)
+        if not category:
+            return 0
+        text = (sink.code or "").lower()
+        best = 0
+        for pat in category.sinks:
+            pat_l = pat.lower()
+            if pat_l and pat_l in text:
+                best = max(best, len(pat))
+        return best
 
     def _bfs_to_sink(
         self,
@@ -459,17 +547,77 @@ class Analyzer:
         specific = [c for c in cats if c != "injection_general"]
         return specific or cats
 
+    def _tainted_arg_position(self, node_ids: list[str]) -> int | None:
+        """返回污点变量在 sink 调用实参中的下标（0-based）；无法确定返回 None。
+
+        sink 必须是带 ``call_args`` 的 ``NODE_CALL_SITE``；污点载体取路径上
+        进入 sink 的上一节点（通常是 ``variable_ref``）的 ``var_name``，再在
+        实参表达式里做精确/属性后缀匹配。确定不了（sink 是 assignment、实参是
+        复杂表达式、或经 CALLS 进入）时返回 ``None``，调用方放行。
+        """
+        if len(node_ids) < 2:
+            return None
+        sink = self._node_data(node_ids[-1])
+        if sink.get("node_type") != NODE_CALL_SITE:
+            return None
+        args = [a.strip() for a in (sink.get("call_args") or [])]
+        if not args:
+            return None
+        prev = self._node_data(node_ids[-2])
+        prev_var = (prev.get("var_name") or "").strip()
+        if not prev_var:
+            return None
+        for i, arg in enumerate(args):
+            # 实参就是该变量（``query(sql)``），或实参是 ``obj.var`` 属性访问
+            if arg == prev_var or arg.endswith("." + prev_var):
+                return i
+        return None
+
     def _sanitizers_on_path(self, node_ids: list[str], cat: str) -> list[str]:
-        """沿路径匹配该漏洞类别的 sanitizer 模式。"""
+        """沿路径匹配该漏洞类别的 sanitizer 模式（def-use 级）。
+
+        BUG 38 (P0-1): 旧实现检查路径上所有节点，而 ``NODE_FUNCTION`` 的
+        ``source`` 是整段函数体（截断 200 字符）—— 函数体内任意位置出现
+        sanitizer 子串（如 ``html.escape(``）都会把整条路径误判为「已净化」，
+        真实漏洞被成批吞掉。修复后的语义：
+
+        - 只检查**语句级**节点（``CALL_SITE`` / ``ASSIGNMENT``），跳过
+          function / parameter / variable_ref；
+        - ``CALL_SITE`` 在能拿到「流入本调用的污点变量」和实参列表时，
+          要求污点变量确实是实参之一（净化发生在污点真正流经处）；信息
+          不完整时退回按表达式子串匹配，保持高召回。
+        """
         rules = self.taint_loader.rules_for(self.language)
         category = rules.categories.get(cat)
         patterns = [p.lower() for p in (category.sanitizers if category else [])]
+        if not patterns:
+            return []
         found: list[str] = []
+        prev: dict = {}
         for nid in node_ids:
-            text = (self._node_data(nid).get("source") or "").lower()
+            data = self._node_data(nid)
+            ntype = data.get("node_type")
+            if ntype == NODE_FUNCTION:
+                prev = {}  # 函数节点不绑定「某个具体污点变量」
+                continue
+            text = ""
+            if ntype == NODE_CALL_SITE:
+                text = (data.get("expression") or "").lower()
+                # def-use 级门控：已知污点变量且已知实参时，污点必须真在实参里
+                prev_var = prev.get("var_name")
+                args = [a.lower() for a in (data.get("call_args") or [])]
+                if prev_var and args and prev_var not in args:
+                    prev = data
+                    continue
+            elif ntype == NODE_ASSIGNMENT:
+                text = (data.get("source") or "").lower()
+            else:
+                prev = data
+                continue
             for pat in patterns:
                 if pat and pat in text and pat not in found:
                     found.append(pat)
+            prev = data
         return found
 
     def _node_data(self, node_id: str) -> dict:
@@ -530,6 +678,7 @@ class Analyzer:
             findings=len(findings),
             sinks=sinks,
             blind_spots=len(blind_spots),
+            truncated_categories=dict(self._truncated_categories),
         )
 
     # ── 内部工具 ────────────────────────────────────────────────────────
@@ -574,6 +723,11 @@ class Analyzer:
 
 
 # ─── 位置字符串解析工具 ────────────────────────────────────────────────────
+
+
+def _severity_rank(severity: str) -> int:
+    """严重级别 → 数值（越大越严重），用于多类别聚合时选主类别。"""
+    return {"critical": 3, "high": 2, "medium": 1}.get(severity, 0)
 
 
 def _file_of(location: str) -> str:

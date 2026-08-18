@@ -277,7 +277,7 @@ class CPGGraphBuilder:
     # BUG 33: 图节点属性一旦变更（如给 call_site 补 enclosing_function），
     # 旧缓存文件仍是按目录路径哈希命名的，直接复用会拿到过时属性。
     # 版本号混入哈希 → 变更属性后自动换新缓存文件。
-    _CACHE_VERSION = "v2"
+    _CACHE_VERSION = "v3"  # v3: P1-3 跨函数边加 confidence 属性
 
     @staticmethod
     def _cache_path_for(directory: Path) -> Path:
@@ -779,12 +779,11 @@ class CPGGraphBuilder:
             if not caller_var_refs:
                 continue
 
-            # ── Positional arg→param matching ──────────────────────
-            # When call_args were extracted during add_file(), use them
-            # for precise positional matching (arg_i → param_i).
-            # Fall back to all-to-all otherwise.
+            # ── 跨函数参数匹配（P1-3）：参数名 → 位置 → 全连接兜底 ──
+            # 匹配精度逐级下降，每条 DATA_FLOW 边带 confidence 属性
+            # （high/medium/low），供下游区分可靠边与过近似边。
             call_args: list[str] = data.get("call_args", [])
-            # Sort params by param_index so param_nodes[i] is the i-th param
+            # Sort params by param_index so sorted_params[i] is the i-th param
             sorted_params = sorted(
                 param_nodes,
                 key=lambda pid: self.graph.nodes[pid].get("param_index", 0),
@@ -796,28 +795,53 @@ class CPGGraphBuilder:
                 if vname and vname not in varref_by_name:
                     varref_by_name[vname] = vid
 
-            did_positional = False
+            # 1) 参数名匹配（highest）：实参变量名 == 形参名。
+            #    name 是跨函数参数绑定的最强信号（很多代码风格里
+            #    调用点传的变量名与被调函数参数同名）。
+            param_by_name: dict[str, str] = {}
+            for pid in sorted_params:
+                pname = self.graph.nodes[pid].get("var_name", "")
+                if pname and pname not in param_by_name:
+                    param_by_name[pname] = pid
+
+            name_matched: set[str] = set()  # 已按名连接的实参变量名
+            for arg_text, vid in varref_by_name.items():
+                pid = param_by_name.get(arg_text)
+                if pid is not None:
+                    self.graph.add_edge(
+                        vid, pid, edge_type=EDGE_DATA_FLOW, confidence="high"
+                    )
+                    name_matched.add(arg_text)
+
+            # 2) 位置匹配（medium）：call_args[i] → 第 i 个形参。
+            #    跳过已被参数名匹配覆盖的实参，避免重复边。
+            positional_done = False
             if call_args and 0 < len(call_args) <= len(sorted_params):
                 for i, arg_text in enumerate(call_args):
                     if i >= len(sorted_params):
                         break
+                    if arg_text in name_matched:
+                        continue
                     matched_vid = varref_by_name.get(arg_text)
                     if matched_vid is not None:
                         self.graph.add_edge(
                             matched_vid,
                             sorted_params[i],
                             edge_type=EDGE_DATA_FLOW,
+                            confidence="medium",
                         )
-                        did_positional = True
+                        positional_done = True
 
-            # Fall back to all-to-all if positional matching didn't fire
-            if not did_positional:
+            # 3) 全连接兜底（low）：上面两级都没命中任何边时，退化为
+            #    所有实参 → 所有形参（过近似，保证不漏报）。
+            if not name_matched and not positional_done:
                 for arg_vid in caller_var_refs:
                     for param_nid in param_nodes:
                         self.graph.add_edge(
                             arg_vid,
                             param_nid,
                             edge_type=EDGE_DATA_FLOW,
+                            confidence="low",
                         )
 
             # DATA_FLOW edges through the call_site node itself:

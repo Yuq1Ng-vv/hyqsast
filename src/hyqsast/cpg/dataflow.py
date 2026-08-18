@@ -18,6 +18,7 @@ from hyqsast.cpg.traversal import Traverser, _loc, _source
 
 if TYPE_CHECKING:
     from hyqsast.cpg.callgraph_builder import CallGraphBuilder
+    from hyqsast.cpg.languages.base import LanguageProvider
     from hyqsast.cpg.parser import Parser
     from hyqsast.cpg.types import FunctionNode
 
@@ -262,11 +263,132 @@ class DataFlowBuilder:
                             kind="assignment",
                         )
                     )
-                # TODO: Complex return tracking — trace return value back to caller
+
+        # BUG 37 (was TODO): trace the callee's return value back to the
+        # caller.  Previously the trace stopped at the callee's uses of the
+        # parameter — ``result = calc(x); return result`` produced no step
+        # past the call, so the value's fate at the call site was invisible.
+        # Match ``return x`` directly and ``y = x ...; return y`` transitively
+        # (one-or-more assignment hops), then hand the value back to the
+        # caller's call-site line as a ``call_return`` step.
+        if callee_ts_node is not None:
+            traced = steps[-1].expression if steps else var_name
+            return_steps = self._trace_return_statements(
+                callee_tree,
+                callee_ts_node,
+                callee_node,
+                target_file,
+                callee_lang,
+                traced,
+            )
+            if return_steps:
+                steps.extend(return_steps)
+                # Hand the value back to the caller's call site (line 0
+                # placeholder, mirroring Step 1's ``call_arg``).
+                steps.append(
+                    DataFlowStep(
+                        location=f"{file_path}:0" if file_path else "<string>:0",
+                        expression="<callee return>",
+                        enclosing_function=from_func,
+                        kind="call_return",
+                    )
+                )
 
         return steps
 
     # ── Internal helpers ────────────────────────────────────────────────
+
+    def _trace_return_statements(
+        self,
+        tree: Tree,
+        callee_ts_node: Node,
+        callee_node: FunctionNode,
+        target_file: str,
+        language: str,
+        traced_name: str,
+    ) -> list[DataFlowStep]:
+        """收集从 *traced_name* 流出的 ``return`` 步骤。
+
+        覆盖 ``return x``（直接返回）与 ``y = x ...; return y``（经一次或
+        多次赋值中转）。只要 return 表达式里的变量能沿赋值边回溯到
+        *traced_name*，就在 return 位置产出一条 ``kind="return"`` 步骤。
+        """
+        provider = self._parser.get_provider(language)
+        body = callee_ts_node.child_by_field_name("body")
+        if body is None:
+            return []
+
+        # 单趟遍历：记录赋值边（target ← RHS 中的标识符）与 return 语句。
+        derived_from: dict[str, set[str]] = {}
+        returns: list[Node] = []
+        traverser = Traverser(tree)
+        for node in traverser.traverse(root=body):
+            if node.type in provider.assignment_types:
+                target = provider.extract_assignment_target(node)
+                if target:
+                    src_idents = self._identifiers_in(node, provider, tree, exclude=target)
+                    if src_idents:
+                        derived_from.setdefault(target, set()).update(src_idents)
+            elif node.type == "return_statement":
+                returns.append(node)
+
+        steps: list[DataFlowStep] = []
+        for ret in returns:
+            returned = self._identifiers_in(ret, provider, tree)
+            if not returned:
+                continue
+            if self._reaches_traced(returned, traced_name, derived_from):
+                steps.append(
+                    DataFlowStep(
+                        location=_loc(ret, target_file),
+                        expression=_source(ret),
+                        enclosing_function=callee_node.name,
+                        kind="return",
+                    )
+                )
+        return steps
+
+    @staticmethod
+    def _reaches_traced(
+        returned: list[str],
+        traced: str,
+        derived: dict[str, set[str]],
+    ) -> bool:
+        """Return True if any returned identifier is (or is derived from) *traced*."""
+        stack = list(returned)
+        seen: set[str] = set()
+        while stack:
+            name = stack.pop()
+            if name == traced:
+                return True
+            if name in seen:
+                continue
+            seen.add(name)
+            stack.extend(derived.get(name, ()))
+        return False
+
+    def _identifiers_in(
+        self,
+        node: Node,
+        provider: LanguageProvider,
+        tree: Tree,
+        exclude: str | None = None,
+    ) -> list[str]:
+        """收集 *node* 子树内去重后的变量标识符名。
+
+        ``Traverser`` 需要整棵 ``Tree`` 才能构造，故 *tree* 由调用方传入，
+        实际以 *node* 为根做子树遍历。
+        """
+        names: list[str] = []
+        for child in Traverser(tree).traverse(root=node):
+            if child.type != "identifier":
+                continue
+            if not provider.is_variable_identifier(child):
+                continue
+            name = _source(child)
+            if name and name != exclude and name not in names:
+                names.append(name)
+        return names
 
     @staticmethod
     def _node_in_range(node: Node, container: Node) -> bool:
