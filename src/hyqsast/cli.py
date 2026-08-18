@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from hyqsast import scan
 from hyqsast.schema import Finding
@@ -26,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--framework", default=None, help="框架提取器名（spring / flask ...）")
     parser.add_argument("--max-findings", type=int, default=50, help="每类别最多 finding 数")
     parser.add_argument("--output", "-o", default=None, help="JSON 报告输出路径")
+    parser.add_argument(
+        "--no-canonical",
+        action="store_true",
+        help="不生成规范版报告（默认与 -o 一并写出 <stem>.canonical.json）",
+    )
     parser.add_argument("--no-blind-spots", action="store_true", help="不输出盲区清单")
     parser.add_argument("--no-cache", action="store_true", help="强制重建 CPG 图，忽略缓存")
     args = parser.parse_args(argv)
@@ -57,6 +63,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.output:
         result.to_json(args.output)
         print(f"\n报告已写入: {args.output}")
+        if not args.no_canonical:
+            output = Path(args.output)
+            canonical_path = output.with_name(f"{output.stem}.canonical{output.suffix}")
+            result.to_canonical_json(canonical_path)
+            print(f"规范版报告已写入: {canonical_path}")
 
     return 0
 

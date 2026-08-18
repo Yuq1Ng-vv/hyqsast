@@ -274,13 +274,20 @@ class CPGGraphBuilder:
 
     # ── Cache helpers ────────────────────────────────────────────────────
 
+    # BUG 33: 图节点属性一旦变更（如给 call_site 补 enclosing_function），
+    # 旧缓存文件仍是按目录路径哈希命名的，直接复用会拿到过时属性。
+    # 版本号混入哈希 → 变更属性后自动换新缓存文件。
+    _CACHE_VERSION = "v2"
+
     @staticmethod
     def _cache_path_for(directory: Path) -> Path:
         """Return the cache file path for *directory*."""
         cache_root = Path.home() / ".cache" / "hyqsast" / "cpg"
         cache_root.mkdir(parents=True, exist_ok=True)
         # Use a hash of the absolute path so cache is stable across cwd changes
-        dir_hash = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:16]
+        dir_hash = hashlib.sha256(
+            f"{CPGGraphBuilder._CACHE_VERSION}:{directory.resolve()}".encode()
+        ).hexdigest()[:16]
         return cache_root / f"{dir_hash}.pkl"
 
     @staticmethod
@@ -423,6 +430,7 @@ class CPGGraphBuilder:
                 node_type=NODE_CALL_SITE,
                 caller=edge.caller,
                 callee=edge.callee,
+                enclosing_function=edge.caller,
                 file_path=path,
                 line=edge.call_line,
                 expression=edge.full_expression,
@@ -650,6 +658,7 @@ class CPGGraphBuilder:
                         node_type=NODE_CALL_SITE,
                         caller=edge.caller,
                         callee=edge.callee,
+                        enclosing_function=edge.caller,
                         file_path=edge.file_path,
                         line=edge.call_line,
                         expression=edge.full_expression,

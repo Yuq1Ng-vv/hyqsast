@@ -12,16 +12,24 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict, deque
 from pathlib import Path
 
 from hyqsast.cpg.frameworks import available_frameworks, get_extractor
-from hyqsast.cpg.graph import EDGE_CALLS, EDGE_DATA_FLOW, NODE_FUNCTION, CPGGraphBuilder
+from hyqsast.cpg.graph import (
+    EDGE_CALLS,
+    EDGE_DATA_FLOW,
+    NODE_CALL_SITE,
+    NODE_FUNCTION,
+    CPGGraphBuilder,
+)
 from hyqsast.cpg.languages import detect_by_extension
 from hyqsast.cpg.parser import Parser
 from hyqsast.cpg.taint_loader import TaintRuleLoader
 from hyqsast.schema import (
     BlindSpot,
+    CanonicalFinding,
     ChainStep,
     Endpoint,
     Finding,
@@ -30,6 +38,7 @@ from hyqsast.schema import (
     ScanResult,
     ScanSummary,
     severity_for,
+    vuln_display_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +81,8 @@ class Analyzer:
         self.parser = Parser(languages=[self.language])
         self.taint_loader = TaintRuleLoader()
         self.graph_builder = CPGGraphBuilder(self.parser, taint_loader=self.taint_loader)
+        # 报告层读源码的按文件缓存（兜底 code / 提取整函数源码）
+        self._src = _SourceCache()
 
     # ── 入口 ────────────────────────────────────────────────────────────
 
@@ -82,12 +93,14 @@ class Analyzer:
         endpoints = self._extract_endpoints()
         findings = self._build_findings()
         blind_spots = self._build_blind_spots(endpoints) if self.include_blind_spots else []
+        canonical = self._build_canonical_findings(findings, endpoints)
 
         return ScanResult(
             summary=self._summarize(endpoints, findings, blind_spots),
             endpoints=endpoints,
             findings=findings,
             blind_spots=blind_spots,
+            canonical_findings=canonical,
         )
 
     # ── 接口提取 ────────────────────────────────────────────────────────
@@ -248,14 +261,16 @@ class Analyzer:
         chain: list[ChainStep] = []
         for i, nid in enumerate(node_ids):
             data = self._node_data(nid)
-            edge = edge_types[i] if i < len(edge_types) else ""
+            file_path, line, function, code = self._node_fields(data)
+            # BUG 35: 链尾 sink 步没有出边（edge_types 比 node_ids 少一个），
+            # edge_type 取「进入 sink」的那条边，避免报告里出现空值。
+            edge = edge_types[i] if i < len(edge_types) else (edge_types[-1] if edge_types else "")
             chain.append(
                 ChainStep(
-                    file_path=data.get("file_path") or _file_of(data.get("location", "")),
-                    line=data.get("line") or data.get("start_line")
-                    or _line_of(data.get("location", "")),
-                    function=data.get("enclosing_function") or data.get("name") or "",
-                    code=data.get("source") or data.get("expression") or "",
+                    file_path=file_path,
+                    line=line,
+                    function=function,
+                    code=code,
                     kind=data.get("node_type", ""),
                     edge_type=edge,
                 )
@@ -278,14 +293,157 @@ class Analyzer:
     def _node_ref_from_id(self, node_id: str, role: str) -> NodeRef:
         """从图节点 id 构建 NodeRef。"""
         data = self._node_data(node_id)
+        file_path, line, function, code = self._node_fields(data)
         return NodeRef(
-            file_path=data.get("file_path") or _file_of(data.get("location", "")),
-            line=data.get("line") or data.get("start_line")
-            or _line_of(data.get("location", "")),
-            function=data.get("enclosing_function") or data.get("name") or "",
-            code=data.get("source") or data.get("expression") or "",
+            file_path=file_path,
+            line=line,
+            function=function,
+            code=code,
             category=data.get(f"taint_{role}") or "",
         )
+
+    def _node_fields(self, data: dict) -> tuple[str, int, str, str]:
+        """从节点属性取 ``(file_path, line, function, code)``，带空值兜底。
+
+        BUG 34: parameter / variable_ref 节点不存源码文本，``code`` 从文件
+        行读回兜底；call_site 节点虽已补 ``enclosing_function``，但对旧缓存
+        仍可能缺失，故 ``function`` 继续兜底 ``caller``/``callee``。
+        """
+        file_path = data.get("file_path") or _file_of(data.get("location", ""))
+        line = data.get("line") or data.get("start_line") or _line_of(data.get("location", ""))
+        function = (
+            data.get("enclosing_function")
+            or data.get("name")
+            or data.get("caller")
+            or data.get("callee")
+            or ""
+        )
+        code = data.get("source") or data.get("expression") or ""
+        if not code and file_path and line:
+            code = self._src.line(file_path, line)
+        return file_path, line, function, code
+
+    # ── 规范版报告 ───────────────────────────────────────────────────────
+
+    def _build_canonical_findings(
+        self,
+        findings: list[Finding],
+        endpoints: list[Endpoint],
+    ) -> list[CanonicalFinding]:
+        """构建规范版报告：sink 函数完整源码 + 函数级真实调用链 + 接口信息。
+
+        与正常报告一一对应，但更面向人工复核：调用链折叠成函数级
+        ``x -> y -> z -> sink``，sink 函数整段贴出并标出 sink 行。
+        """
+        return [
+            CanonicalFinding(
+                id=f.id,
+                vuln_type=f.vuln_type,
+                vuln_name=(
+                    f"{vuln_display_name(f.vuln_type)} @ {f.sink.file_path}:{f.sink.line}"
+                ),
+                endpoint=self._endpoint_for_finding(f, endpoints),
+                sink_function=self._sink_function_block(f),
+                call_chain=self._render_chain(f),
+            )
+            for f in findings
+        ]
+
+    @staticmethod
+    def _endpoint_for_finding(f: Finding, endpoints: list[Endpoint]) -> str:
+        """找漏洞所在接口：优先 ``(文件, handler)`` 精确匹配，退回同文件第一个。"""
+        src = f.source
+        exact = [
+            ep
+            for ep in endpoints
+            if ep.file_path == src.file_path and ep.handler_func == src.function
+        ]
+        candidates = exact or [ep for ep in endpoints if ep.file_path == src.file_path]
+        if not candidates:
+            return ""
+        ep = candidates[0]
+        methods = "/".join(ep.methods) or "ANY"
+        return f"{methods} {ep.route} @ {ep.file_path}:{ep.line} ({ep.handler_func})"
+
+    def _sink_function_block(self, f: Finding, margin: int = 5) -> str:
+        """返回 sink 点所在函数的完整源码：带行号，sink 行标 ``▶`` 并尾注类别。
+
+        在图中找 ``file_path`` 相同且包含 sink 行的函数节点（取范围最小者）；
+        找不到时退化为 sink 行 ±*margin* 行的窗口。
+        """
+        sink = f.sink
+        best: tuple[int, int] | None = None
+        for _, data in self.graph_builder.graph.nodes(data=True):
+            if data.get("node_type") != NODE_FUNCTION:
+                continue
+            if data.get("file_path") != sink.file_path:
+                continue
+            start = data.get("start_line") or 0
+            end = data.get("end_line") or 0
+            if start and end and start <= sink.line <= end:
+                if best is None or (end - start) < (best[1] - best[0]):
+                    best = (start, end)
+        if best is None:
+            start, end = max(1, sink.line - margin), sink.line + margin
+        else:
+            start, end = best
+
+        lines = self._src.slice(sink.file_path, start, end)
+        width = len(str(end))
+        out: list[str] = []
+        for n, text in enumerate(lines, start=start):
+            flag = "▶" if n == sink.line else " "
+            # rstrip：源码行尾若有空白，紧贴代码放 sink 标注更整洁
+            suffix = f"  // ← SINK: {f.vuln_type}" if n == sink.line else ""
+            out.append(f"{flag} {n:>{width}} | {text.rstrip()}{suffix}")
+        return "\n".join(out)
+
+    def _render_chain(self, f: Finding) -> str:
+        """把 finding 的节点路径折叠成函数级真实链 ``x -> y -> z -> sink``。
+
+        每个 hop 取「所在函数（call_site 取被调用的 callee）」+ 相对扫描目录的
+        ``file:line``；同一函数内的连续步骤折叠为一步。
+        """
+        # (file, line) → callee：call_site 步骤折叠成「被调用的函数」hop
+        callee_at: dict[tuple[str, int], str] = {}
+        for _, data in self.graph_builder.graph.nodes(data=True):
+            if (
+                data.get("node_type") == NODE_CALL_SITE
+                and data.get("callee")
+                and data.get("line")
+            ):
+                callee_at[(data.get("file_path", ""), data.get("line"))] = data["callee"]
+
+        hops: list[tuple[str, str]] = []  # (函数名, 相对路径:行号)
+        total = len(f.call_chain)
+        for idx, step in enumerate(f.call_chain):
+            if step.kind == "call_site":
+                label = callee_at.get((step.file_path, step.line)) or step.function
+                # BUG 36: 方法链 sink（如 ``this.getClass().getMethod(...)``）
+                # 的 callee 只取到链首 ``getClass``，从表达式提链尾真 sink。
+                if idx == total - 1 and step.code:
+                    label = _last_call_name(step.code) or label
+            else:
+                label = step.function
+            if not label:
+                continue
+            loc = f"{self._rel_path(step.file_path)}:{step.line}"
+            if hops and hops[-1][0] == label:
+                continue  # 同一函数内折叠
+            hops.append((label, loc))
+
+        if not hops:
+            return ""
+        parts = [f"{label} @ {loc}" for label, loc in hops]
+        parts[-1] += "  ← SINK"
+        return " -> ".join(parts)
+
+    def _rel_path(self, path: str) -> str:
+        """返回相对扫描目录的路径；文件在目录外时退化为 basename。"""
+        try:
+            return str(Path(path).resolve().relative_to(self.directory.resolve()))
+        except (ValueError, OSError):
+            return Path(path).name
 
     def _sink_categories(self, node_id: str) -> list[str]:
         """返回 sink 节点的所有类别（按逗号拆分）。
@@ -428,3 +586,50 @@ def _line_of(location: str) -> int:
         return int(location.rsplit(":", 1)[1])
     except (ValueError, IndexError):
         return 0
+
+
+def _last_call_name(expr: str) -> str:
+    """从调用表达式取「链中最后一个被调用的方法名」。
+
+    处理 ``this.getClass().getMethod(...)`` 这类方法链：callgraph 的 callee
+    只取到链首 ``getClass``，而真正的 sink 是链尾 ``getMethod``。
+    """
+    m = re.findall(r"(?:\.|^)\s*([A-Za-z_$][\w$]*)\s*\(", expr)
+    return m[-1] if m else ""
+
+
+class _SourceCache:
+    """按文件缓存全部行文本，供报告层兜底 ``code`` / 提取整函数源码。
+
+    图节点只存精简属性（``source`` 截断、``variable_ref`` 无源码文本），
+    报告层需要真实代码时按文件读一次并缓存，避免逐行重复 I/O。
+    """
+
+    def __init__(self) -> None:
+        self._lines: dict[str, list[str]] = {}
+
+    def _load(self, path: str) -> list[str]:
+        cached = self._lines.get(path)
+        if cached is None:
+            try:
+                cached = Path(path).read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                cached = []
+            self._lines[path] = cached
+        return cached
+
+    def line(self, path: str, n: int) -> str:
+        """返回第 *n* 行文本（去首尾空白）；行号越界返回空串。"""
+        lines = self._load(path)
+        if 1 <= n <= len(lines):
+            return lines[n - 1].strip()
+        return ""
+
+    def slice(self, path: str, start: int, end: int) -> list[str]:
+        """返回 ``[start, end]`` 闭区间的行文本列表（保留原缩进，越界自动截断）。"""
+        lines = self._load(path)
+        start = max(1, start)
+        end = min(len(lines), end)
+        if start > end:
+            return []
+        return lines[start - 1 : end]

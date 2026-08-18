@@ -12,23 +12,27 @@
 
 from hyqsast.api import scan
 from hyqsast.schema import (
+    CanonicalFinding,
     ChainStep,
     Endpoint,
     Finding,
     NodeRef,
     ScanResult,
     ScanSummary,
+    vuln_display_name,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
     "scan",
+    "CanonicalFinding",
     "ChainStep",
     "Endpoint",
     "Finding",
     "NodeRef",
     "ScanResult",
     "ScanSummary",
+    "vuln_display_name",
     "__version__",
 ]

@@ -25,7 +25,8 @@ uv sync              # 只装 6 个轻依赖，无 LLM / langgraph / 报告栈
 from hyqsast import scan
 
 result = scan("/path/to/java/project", language="java")   # language 可省略（自动探测）
-result.to_json("report.json")                             # 落盘 JSON
+result.to_json("report.json")                             # 完整报告 JSON
+result.to_canonical_json("report.canonical.json")         # 规范版（人工复核用）
 
 for f in result.findings:
     print(f.vuln_type, f.severity, f.source.file_path, f.source.line)
@@ -33,10 +34,15 @@ for f in result.findings:
         print("  ", step.function, step.file_path, step.line, step.code)
 ```
 
+`result.canonical_findings` 是与 `result.findings` 一一对应的规范版条目
+（每条含中文漏洞名 + 接口 + sink 函数完整源码 + 函数级真实调用链）。
+
 ### 命令行
 
 ```bash
 uv run hyqsast /path/to/java/project --language java -o report.json
+# 生成 report.json 的同时自动写出 report.canonical.json；
+# 加 --no-canonical 可只出完整报告
 ```
 
 ## 结果结构（`ScanResult`）
@@ -64,6 +70,33 @@ uv run hyqsast /path/to/java/project --language java -o report.json
   "blind_spots": [ { "kind":"endpoint_no_source", "location":"...", "reason":"...", "recommendation":"..." } ]
 }
 ```
+
+## 规范版报告（`report.canonical.json`）
+
+与完整报告同时生成，专为**人工复核**设计。结构是一个列表，每条对应一个 finding，
+六个字段：`id` / `vuln_type` / `vuln_name` / `endpoint` / `sink_function` / `call_chain`。
+
+```jsonc
+[
+  {
+    "id": "sql_injection-.../UserController.java:11->...:14",
+    "vuln_type": "sql_injection",
+    "vuln_name": "SQL 注入 @ .../UserController.java:14",
+    "endpoint": "GET /user @ .../UserController.java:11 (getUser)",
+    "sink_function": "  12 | public String getUser(@RequestParam String id) {\n"
+                   "  13 |     String sql = \"SELECT * FROM users WHERE id = \" + id;\n"
+                   "▶ 14 |     return jdbc.queryForObject(sql, String.class);  // ← SINK: sql_injection\n"
+                   "  15 | }",
+    "call_chain": "getUser @ src/UserController.java:11 -> queryForObject @ src/UserController.java:14  ← SINK"
+  }
+]
+```
+
+- **`vuln_name`**：中文漏洞名 + 漏洞所在文件位置（sink 行）。
+- **`endpoint`**：漏洞所在 HTTP 接口；按 `(文件, handler)` 匹配，匹配不到则为空串。
+- **`sink_function`**：sink 点所在函数**完整源码**，带行号，sink 行前缀 `▶` 并尾注 `← SINK: 类别`。
+- **`call_chain`**：函数级**真实调用链** `x -> y -> z -> sink`，每个 hop 带相对扫描目录的
+  `file:line`；同一函数内步骤折叠为一步，方法链 sink（如 `a.b().c()`）取链尾真实调用名。
 
 ## 漏洞类型 → 严重级别
 

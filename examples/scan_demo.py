@@ -35,9 +35,18 @@ def main() -> int:
             print(f"      {step.kind:14s} [{step.edge_type:9s}] {step.function} "
                   f"@{step.file_path}:{step.line}  {step.code.strip()[:50]!r}")
 
-    # 落盘一份 JSON 供下游消费
+    print("\n=== 规范版(canonical) 前 5 条 ===")
+    for c in result.canonical_findings[:5]:
+        print(f"  [{c.vuln_type}] {c.vuln_name}")
+        if c.endpoint:
+            print(f"    endpoint: {c.endpoint}")
+        print(f"    chain:    {c.call_chain}")
+        print(f"    sink 函数（sink 行标 ▶）:\n{c.sink_function}")
+
+    # 落盘完整报告 + 规范版 JSON 供下游消费
     result.to_json("report.json")
-    print("\n完整 JSON 已写入 report.json")
+    result.to_canonical_json("report.canonical.json")
+    print("\n完整 JSON 已写入 report.json / report.canonical.json")
     return 0
 
 

@@ -48,6 +48,36 @@ def severity_for(vuln_type: str) -> str:
     return SEVERITY_MAP.get(vuln_type, "medium")
 
 
+# 漏洞类别 → 中文显示名（规范版报告的 ``vuln_name`` 用）
+VULN_DISPLAY_NAMES: dict[str, str] = {
+    "code_injection": "代码注入",
+    "command_injection": "命令注入",
+    "deserialization": "反序列化",
+    "jndi_injection": "JNDI 注入",
+    "ssti": "服务端模板注入(SSTI)",
+    "sql_injection": "SQL 注入",
+    "xpath_injection": "XPath 注入",
+    "xxe": "XML 外部实体注入(XXE)",
+    "ldap_injection": "LDAP 注入",
+    "ssrf": "SSRF 服务端请求伪造",
+    "path_traversal": "路径穿越",
+    "auth_bypass": "认证绕过",
+    "header_injection": "响应头注入",
+    "format_string": "格式化字符串漏洞",
+    "xss": "跨站脚本(XSS)",
+    "open_redirect": "开放重定向",
+    "crypto_weakness": "弱加密",
+    "log_injection": "日志注入",
+    "info_disclosure": "信息泄露",
+    "injection_general": "通用注入",
+}
+
+
+def vuln_display_name(vuln_type: str) -> str:
+    """返回某个漏洞类别的中文显示名，未知类别回退原类别名。"""
+    return VULN_DISPLAY_NAMES.get(vuln_type, vuln_type)
+
+
 # ─── 接口 ──────────────────────────────────────────────────────────────────
 
 
@@ -127,6 +157,24 @@ class BlindSpot:
     recommendation: str = ""
 
 
+@dataclass
+class CanonicalFinding:
+    """规范版报告条目 —— 人工复核优先看这份。
+
+    - ``vuln_name``: 中文漏洞名 + 漏洞所在文件位置
+    - ``endpoint``: 漏洞所在的 HTTP 接口（方法 + 路由 + 文件位置）
+    - ``sink_function``: sink 点所在函数完整源码（带行号，sink 行标 ``▶``）
+    - ``call_chain``: 函数级真实调用链 ``x -> y -> z -> sink``（每个 hop 带 file:line）
+    """
+
+    id: str = ""
+    vuln_type: str = ""
+    vuln_name: str = ""
+    endpoint: str = ""
+    sink_function: str = ""
+    call_chain: str = ""
+
+
 # ─── 汇总与顶层结果 ────────────────────────────────────────────────────────
 
 
@@ -150,14 +198,32 @@ class ScanResult:
     endpoints: list[Endpoint] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     blind_spots: list[BlindSpot] = field(default_factory=list)
+    canonical_findings: list[CanonicalFinding] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        """递归转为纯 dict（JSON 可直接序列化）。"""
-        return asdict(self)
+        """递归转为纯 dict（JSON 可直接序列化）。
+
+        规范版报告独立成文件（``to_canonical_json``），不进原报告结构，
+        保持既有输出字段不变。
+        """
+        d = asdict(self)
+        d.pop("canonical_findings", None)
+        return d
 
     def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
         """序列化为 JSON 字符串；若给定 ``path`` 则同时落盘。"""
         text = json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def to_canonical_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
+        """序列化规范版报告（``list[CanonicalFinding]``）；给定 ``path`` 则落盘。"""
+        text = json.dumps(
+            [asdict(c) for c in self.canonical_findings],
+            ensure_ascii=False,
+            indent=indent,
+        )
         if path is not None:
             Path(path).write_text(text, encoding="utf-8")
         return text
