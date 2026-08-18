@@ -430,9 +430,7 @@ class Analyzer:
             CanonicalFinding(
                 id=f.id,
                 vuln_type=f.vuln_type,
-                vuln_name=(
-                    f"{vuln_display_name(f.vuln_type)} @ {f.sink.file_path}:{f.sink.line}"
-                ),
+                vuln_name=(f"{vuln_display_name(f.vuln_type)} @ {f.sink.file_path}:{f.sink.line}"),
                 endpoint=self._endpoint_for_finding(f, endpoints),
                 sink_function=self._sink_function_block(f),
                 call_chain=self._render_chain(f),
@@ -498,11 +496,7 @@ class Analyzer:
         # (file, line) → callee：call_site 步骤折叠成「被调用的函数」hop
         callee_at: dict[tuple[str, int], str] = {}
         for _, data in self.graph_builder.graph.nodes(data=True):
-            if (
-                data.get("node_type") == NODE_CALL_SITE
-                and data.get("callee")
-                and data.get("line")
-            ):
+            if data.get("node_type") == NODE_CALL_SITE and data.get("callee") and data.get("line"):
                 callee_at[(data.get("file_path", ""), data.get("line"))] = data["callee"]
 
         hops: list[tuple[str, str]] = []  # (函数名, 相对路径:行号)
@@ -668,9 +662,7 @@ class Analyzer:
     ) -> ScanSummary:
         graph = self.graph_builder.graph
         functions = sum(1 for _, d in graph.nodes(data=True) if d.get("node_type") == NODE_FUNCTION)
-        sinks = sum(
-            1 for _, d in graph.nodes(data=True) if d.get("taint_sink")
-        )
+        sinks = sum(1 for _, d in graph.nodes(data=True) if d.get("taint_sink"))
         return ScanSummary(
             files=len(self._source_files()),
             functions=functions,

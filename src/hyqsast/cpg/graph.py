@@ -808,9 +808,7 @@ class CPGGraphBuilder:
             for arg_text, vid in varref_by_name.items():
                 pid = param_by_name.get(arg_text)
                 if pid is not None:
-                    self.graph.add_edge(
-                        vid, pid, edge_type=EDGE_DATA_FLOW, confidence="high"
-                    )
+                    self.graph.add_edge(vid, pid, edge_type=EDGE_DATA_FLOW, confidence="high")
                     name_matched.add(arg_text)
 
             # 2) 位置匹配（medium）：call_args[i] → 第 i 个形参。

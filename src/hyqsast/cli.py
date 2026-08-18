@@ -62,8 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     s = result.summary
-    print(f"文件: {s.files}  函数: {s.functions}  接口: {s.endpoints}  "
-          f"finding: {s.findings}  sink: {s.sinks}  盲区: {s.blind_spots}")
+    print(
+        f"文件: {s.files}  函数: {s.functions}  接口: {s.endpoints}  "
+        f"finding: {s.findings}  sink: {s.sinks}  盲区: {s.blind_spots}"
+    )
 
     # P0-2: 截断可见化 —— 让用户知道某类别还有更多候选被上限吞掉
     if s.truncated_categories:
@@ -76,8 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     if result.endpoints:
         print("\n── 接口 ──")
         for ep in result.endpoints:
-            print(f"  {'/'.join(ep.methods) or 'ANY':6s} {ep.route}  "
-                  f"-> {ep.handler_func}  ({ep.file_path}:{ep.line})")
+            print(
+                f"  {'/'.join(ep.methods) or 'ANY':6s} {ep.route}  "
+                f"-> {ep.handler_func}  ({ep.file_path}:{ep.line})"
+            )
 
     if result.findings:
         print("\n── 漏洞 ──")

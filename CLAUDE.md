@@ -79,7 +79,8 @@ src/hyqsast/
 污点标签通过 `_label_taint_nodes()` 打到 `assignment` / `call_site` / `parameter` 节点上，属性为 `taint_source` / `taint_sink` / `taint_category`（逗号分隔的多类别）。**source 优先于 sink**：一个节点匹配了 source 就不再评估 sink（节点不可能同时是 source 和 sink）。
 
 污点传播关键设计（见 `graph.py` 内注释）：
-- **跨函数**：位置匹配参数↔实参，失败则「兜底全连接」（过近似，保证不漏报）
+- **跨函数**（P1-3）：参数名匹配（high）→ 位置匹配（medium）→ 全连接兜底（low），
+  边带 `confidence` 属性；两级都未命中才全连接（过近似，保证不漏报）
 - **RHS→LHS 边**：`list = jdbc.query(sql)` 中 `sql` 的 var_ref → `list` 的 assignment
 - **var_ref → call_site 边**：`jdbcTemplate.query(sql)` 这种表达式语句的 sink 桥接
 
@@ -118,3 +119,4 @@ source 只表示「有用户输入」，精确 vuln_type 由 sink 决定（如 `
 
 - 完整用法与结果结构示例见 `README.md`。
 - 最小可运行示例见 `examples/scan_demo.py`。
+- 已知限制与优化路线图（P0/P1 已完成、P2/P3 待做）见 `docs/TODO.md`。
