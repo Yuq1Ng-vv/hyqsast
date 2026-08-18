@@ -77,7 +77,10 @@ class Parser:
                 if issues:
                     import warnings
 
-                    warnings.warn(f"LanguageProvider {name!r} has contract issues: {issues}")
+                    warnings.warn(
+                        f"LanguageProvider {name!r} has contract issues: {issues}",
+                        stacklevel=2,
+                    )
             self._providers[name] = prov
             self._parsers[name] = prov.build_ts_parser()
 

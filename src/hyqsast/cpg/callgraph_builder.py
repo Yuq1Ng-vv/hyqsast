@@ -285,7 +285,7 @@ class CallGraphBuilder:
         """
         from hyqsast.cpg.traversal import Traverser
 
-        _PRIMITIVES = {
+        _primitives = {
             "int",
             "long",
             "float",
@@ -304,7 +304,7 @@ class CallGraphBuilder:
             "Byte",
             "Short",
         }
-        _CONTAINERS = {
+        _containers = {
             "List",
             "Map",
             "Set",
@@ -322,7 +322,7 @@ class CallGraphBuilder:
             "ServletException",
             "IOException",
         }
-        skip = _PRIMITIVES | _CONTAINERS
+        skip = _primitives | _containers
 
         types: list[str] = []
         seen: set[str] = set()

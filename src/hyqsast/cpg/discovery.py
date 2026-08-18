@@ -358,7 +358,7 @@ class SourceCompletenessChecker:
 
     def _handler_has_source(self, handler_func: str, file_path: str) -> bool:
         """Check whether any assignment in *handler_func* matches a YAML source pattern."""
-        for nid, data in self._graph.nodes(data=True):
+        for _, data in self._graph.nodes(data=True):
             if data.get("node_type") != NODE_ASSIGNMENT:
                 continue
             if data.get("enclosing_function") != handler_func:

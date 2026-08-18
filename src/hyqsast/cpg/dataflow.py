@@ -287,10 +287,10 @@ class DataFlowBuilder:
 
         Uses a per-tree cache to avoid repeated full-tree traversals.
 
-        BUG 23: The cache is capped at ``_MAX_FN_CACHE`` entries with
+        BUG 23: The cache is capped at ``_max_fn_cache`` entries with
         FIFO eviction to prevent unbounded growth across many parses.
         """
-        _MAX_FN_CACHE = 8192
+        _max_fn_cache = 8192
         cache_key = (id(tree), fn.name, fn.start_line)
         if not hasattr(self, "_fn_cache"):
             self._fn_cache: dict[tuple, Node | None] = {}
@@ -299,7 +299,7 @@ class DataFlowBuilder:
             return self._fn_cache[cache_key]
 
         # Evict oldest entry if at capacity
-        if len(self._fn_cache) >= _MAX_FN_CACHE and self._fn_cache_keys:
+        if len(self._fn_cache) >= _max_fn_cache and self._fn_cache_keys:
             old_key = self._fn_cache_keys.pop(0)
             self._fn_cache.pop(old_key, None)
 

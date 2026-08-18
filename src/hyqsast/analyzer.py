@@ -16,7 +16,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from hyqsast.cpg.frameworks import available_frameworks, get_extractor
-from hyqsast.cpg.graph import CPGGraphBuilder, EDGE_CALLS, EDGE_DATA_FLOW, NODE_FUNCTION
+from hyqsast.cpg.graph import EDGE_CALLS, EDGE_DATA_FLOW, NODE_FUNCTION, CPGGraphBuilder
 from hyqsast.cpg.languages import detect_by_extension
 from hyqsast.cpg.parser import Parser
 from hyqsast.cpg.taint_loader import TaintRuleLoader

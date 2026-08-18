@@ -774,7 +774,7 @@ class CPGQuery:
 
             # Check whether any assignment in this function has taint_category
             has_source = False
-            for anid, adata in self._graph.nodes(data=True):
+            for _, adata in self._graph.nodes(data=True):
                 if adata.get("node_type") != NODE_ASSIGNMENT:
                     continue
                 if adata.get("enclosing_function") != name:
@@ -911,7 +911,7 @@ class CPGQuery:
         categories: set[str] = set()
         source_texts: list[str] = []
         sink_texts: list[str] = []
-        for nid, data in self._graph.nodes(data=True):
+        for _, data in self._graph.nodes(data=True):
             if data.get("node_type") != NODE_ASSIGNMENT:
                 continue
             if data.get("enclosing_function") != endpoint_func:

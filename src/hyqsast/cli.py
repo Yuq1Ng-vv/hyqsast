@@ -20,7 +20,9 @@ def main(argv: list[str] | None = None) -> int:
         description="确定性污点分析：输出接口 / 漏洞类型 / 调用链",
     )
     parser.add_argument("directory", help="源码目录")
-    parser.add_argument("--language", default=None, help="java / python / javascript（缺省自动探测）")
+    parser.add_argument(
+        "--language", default=None, help="java / python / javascript（缺省自动探测）"
+    )
     parser.add_argument("--framework", default=None, help="框架提取器名（spring / flask ...）")
     parser.add_argument("--max-findings", type=int, default=50, help="每类别最多 finding 数")
     parser.add_argument("--output", "-o", default=None, help="JSON 报告输出路径")
