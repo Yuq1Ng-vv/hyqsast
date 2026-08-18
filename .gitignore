@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 虚拟环境 / 工具缓存
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# 生成的扫描报告
+report.json
+
+# 本地机器相关的 Claude Code 权限配置（不入库）
+.claude/settings.local.json
