@@ -24,9 +24,10 @@ uv sync              # 只装 6 个轻依赖，无 LLM / langgraph / 报告栈
 ```python
 from hyqsast import scan
 
-result = scan("/path/to/java/project", language="java")   # language 可省略（自动探测）
-result.to_json("report.json")                             # 完整报告 JSON
-result.to_canonical_json("report.canonical.json")         # 规范版（人工复核用）
+result = scan("/path/to/java/project", language="java")  # language 可省略（自动探测）
+result.to_json("report.json")  # 完整报告 JSON
+result.to_canonical_json("report.canonical.json")  # 规范版（人工复核用）
+result.to_elements_json("report.elements.json")  # 污点元素清单（漏报排查用）
 
 for f in result.findings:
     print(f.vuln_type, f.severity, f.source.file_path, f.source.line)
@@ -41,8 +42,8 @@ for f in result.findings:
 
 ```bash
 uv run hyqsast /path/to/java/project --language java -o report.json
-# 生成 report.json 的同时自动写出 report.canonical.json；
-# 加 --no-canonical 可只出完整报告
+# 生成 report.json 的同时自动写出 report.canonical.json（规范版）
+# 与 report.elements.json（污点元素清单）；加 --no-canonical / --no-elements 可分别关掉
 ```
 
 ## 自定义规则库
@@ -118,6 +119,30 @@ result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.
 - **`sink_function`**：sink 点所在函数**完整源码**，带行号，sink 行前缀 `▶` 并尾注 `← SINK: 类别`。
 - **`call_chain`**：函数级**真实调用链** `x -> y -> z -> sink`，每个 hop 带相对扫描目录的
   `file:line`；同一函数内步骤折叠为一步，方法链 sink（如 `a.b().c()`）取链尾真实调用名。
+
+## 污点元素清单（`report.elements.json`）
+
+与完整报告同时生成，列出本次扫描**规则引擎识别到的全部 source / sink 点**，供**排查漏报**
+（某条真实漏洞为什么没出 finding）。结构是一个列表，每个元素对应图上一个被打
+`taint_source` / `taint_sink` 标签的节点（多类别节点逐类别展开）：
+
+```jsonc
+[
+  {
+    "kind": "sink", "category": "sql_injection",
+    "file_path": ".../UserController.java", "line": 14,
+    "function": "getUser", "code": "jdbc.queryForObject(sql, String.class)",
+    "node_type": "call_site", "patterns": [".queryForObject("], "covered": true
+  }
+]
+```
+
+- **`kind`**：`"source"` / `"sink"`。
+- **`category`**：命中的漏洞类别（如 `sql_injection`；source 常用兜底的 `injection_general`）。
+- **`patterns`**：该点命中的具体规则模式（参数节点的 source 由注解推导，此列为空）。
+- **`covered`**：该 `(file, line)` 是否出现在某条已产出 finding 的 source/sink 里。
+  `covered: false` 的 sink 即「规则命中了、却没接住任何 finding」——漏报排查从这里入手
+  （要么上游没有可到达的 source，要么数据流链在某处断了）。
 
 ## 漏洞类型 → 严重级别
 

@@ -38,6 +38,7 @@ from hyqsast.schema import (
     RouteParam,
     ScanResult,
     ScanSummary,
+    TaintElement,
     severity_for,
     vuln_display_name,
 )
@@ -114,6 +115,7 @@ class Analyzer:
         findings = self._build_findings()
         blind_spots = self._build_blind_spots(endpoints) if self.include_blind_spots else []
         canonical = self._build_canonical_findings(findings, endpoints)
+        taint_elements = self._collect_taint_elements(findings)
 
         return ScanResult(
             summary=self._summarize(endpoints, findings, blind_spots),
@@ -121,6 +123,7 @@ class Analyzer:
             findings=findings,
             blind_spots=blind_spots,
             canonical_findings=canonical,
+            taint_elements=taint_elements,
         )
 
     # ── 接口提取 ────────────────────────────────────────────────────────
@@ -618,6 +621,57 @@ class Analyzer:
         """从图中取回节点的完整属性。"""
         return self.graph_builder.graph.nodes.get(node_id, {})
 
+    # ── 污点元素清单（漏报排查） ────────────────────────────────────────
+
+    def _collect_taint_elements(self, findings: list[Finding]) -> list[TaintElement]:
+        """枚举规则引擎在整张图上识别到的 source / sink 点。
+
+        与 finding 正交：每个被打上 ``taint_source`` / ``taint_sink`` 标签的
+        节点都记一条（多类别节点逐类别展开），并用 ``covered`` 标注该位置
+        是否出现在某条已产出 finding 的 source/sink 里 —— 排查漏报时
+        「有 sink 规则、却没接住任何 finding」的裸 sink 一眼可见。
+        """
+        rules = self.taint_loader.rules_for(self.language)
+        src_covered = {(f.source.file_path, f.source.line) for f in findings}
+        sink_covered = {(f.sink.file_path, f.sink.line) for f in findings}
+
+        elements: list[TaintElement] = []
+        for _nid, data in self.graph_builder.graph.nodes(data=True):
+            file_path, line, function, code = self._node_fields(data)
+            if not file_path or not line:
+                continue
+            ntype = data.get("node_type", "")
+            # source 优先：被标为 source 的节点不再评估 sink（与打标签一致）
+            label = data.get("taint_source") or data.get("taint_sink")
+            if not label:
+                continue
+            kind = "source" if data.get("taint_source") else "sink"
+            covered = (file_path, line) in (src_covered if kind == "source" else sink_covered)
+            for cat in _split_taint_labels(label):
+                # BUG 41: 标签可能来自缓存残留（建图时规则集含该类别，本次
+                # 不含），类别缺失时按空模式处理，不抛错。
+                category = rules.categories.get(cat)
+                if category is None:
+                    matched: list[str] = []
+                else:
+                    pats = category.sources if kind == "source" else category.sinks
+                    matched = [p for p in pats if p and p in code]
+                elements.append(
+                    TaintElement(
+                        kind=kind,
+                        category=cat,
+                        file_path=file_path,
+                        line=line,
+                        function=function,
+                        code=code,
+                        node_type=ntype,
+                        patterns=matched,
+                        covered=covered,
+                    )
+                )
+        elements.sort(key=lambda e: (e.kind, e.category, e.file_path, e.line))
+        return elements
+
     # ── 盲区 ────────────────────────────────────────────────────────────
 
     def _build_blind_spots(self, endpoints: list[Endpoint]) -> list[BlindSpot]:
@@ -720,6 +774,15 @@ class Analyzer:
 def _severity_rank(severity: str) -> int:
     """严重级别 → 数值（越大越严重），用于多类别聚合时选主类别。"""
     return {"critical": 3, "high": 2, "medium": 1}.get(severity, 0)
+
+
+def _split_taint_labels(label: str) -> list[str]:
+    """拆分逗号分隔的 ``taint_source`` / ``taint_sink`` 类别标签。
+
+    与 :meth:`Analyzer._sink_categories` 不同：这里保留全部类别（含
+    ``injection_general``），供元素清单如实呈现规则引擎的标记结果。
+    """
+    return [c.strip() for c in label.split(",") if c.strip()]
 
 
 def _file_of(location: str) -> str:

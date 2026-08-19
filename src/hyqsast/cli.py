@@ -39,6 +39,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="不生成规范版报告（默认与 -o 一并写出 <stem>.canonical.json）",
     )
+    parser.add_argument(
+        "--no-elements",
+        action="store_true",
+        help="不生成污点元素清单（默认与 -o 一并写出 <stem>.elements.json，供漏报排查）",
+    )
     parser.add_argument("--no-blind-spots", action="store_true", help="不输出盲区清单")
     parser.add_argument("--no-cache", action="store_true", help="强制重建 CPG 图，忽略缓存")
     args = parser.parse_args(argv)
@@ -91,11 +96,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.output:
         result.to_json(args.output)
         print(f"\n报告已写入: {args.output}")
+        output = Path(args.output)
         if not args.no_canonical:
-            output = Path(args.output)
             canonical_path = output.with_name(f"{output.stem}.canonical{output.suffix}")
             result.to_canonical_json(canonical_path)
             print(f"规范版报告已写入: {canonical_path}")
+        if not args.no_elements:
+            elements_path = output.with_name(f"{output.stem}.elements{output.suffix}")
+            result.to_elements_json(elements_path)
+            src_n = sum(1 for e in result.taint_elements if e.kind == "source")
+            sink_n = sum(1 for e in result.taint_elements if e.kind == "sink")
+            print(f"污点元素清单已写入: {elements_path}  (sources: {src_n}  sinks: {sink_n})")
 
     return 0
 

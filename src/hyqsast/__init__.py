@@ -19,6 +19,7 @@ from hyqsast.schema import (
     NodeRef,
     ScanResult,
     ScanSummary,
+    TaintElement,
     vuln_display_name,
 )
 
@@ -33,6 +34,7 @@ __all__ = [
     "NodeRef",
     "ScanResult",
     "ScanSummary",
+    "TaintElement",
     "vuln_display_name",
     "__version__",
 ]

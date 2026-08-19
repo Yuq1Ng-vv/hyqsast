@@ -5,6 +5,10 @@
 
 ## 已完成（P0/P1，2026-08）
 
+- **污点元素清单**（`TaintElement` + `ScanResult.taint_elements` + `to_elements_json`）
+  报告副产品 `report.elements.json`：列出规则引擎识别到的全部 source/sink 点
+  （类别、命中规则、covered 标记），供排查漏报（`covered: false` 的裸 sink 即
+  「规则命中但没接住 finding」）。CLI `--no-elements` 可关。
 - **P0-1 sanitizer 净化语义 def-use 级**（`analyzer.py::_sanitizers_on_path`，BUG 38）
   只检查语句级节点（CALL_SITE / ASSIGNMENT），不再匹配整个函数体；CALL_SITE
   在能拿到污点变量与实参时要求污点确实作为实参流入净化调用。

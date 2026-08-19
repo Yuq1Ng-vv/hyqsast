@@ -157,6 +157,26 @@ class Finding:
 
 
 @dataclass
+class TaintElement:
+    """规则引擎识别出的一个 source / sink 点（报告副产品，供漏报排查）。
+
+    与 finding 正交：每个被打上 taint_source / taint_sink 标签的图节点都
+    记一条（多类别节点逐类别展开）。排查漏报时用 ``covered`` 一眼筛出
+    「sink 规则命中了、却没有 finding 接住它」的裸 sink。
+    """
+
+    kind: str  # "source" / "sink"
+    category: str  # 命中的漏洞类别
+    file_path: str = ""
+    line: int = 0
+    function: str = ""
+    code: str = ""
+    node_type: str = ""  # assignment / call_site / parameter
+    patterns: list[str] = field(default_factory=list)  # 命中的具体规则模式（可空）
+    covered: bool = False  # 该 (file, line) 是否出现在某条 finding 的 source/sink
+
+
+@dataclass
 class BlindSpot:
     """扫描盲区条目 —— 让使用者知道「没覆盖到什么」。"""
 
@@ -211,20 +231,40 @@ class ScanResult:
     findings: list[Finding] = field(default_factory=list)
     blind_spots: list[BlindSpot] = field(default_factory=list)
     canonical_findings: list[CanonicalFinding] = field(default_factory=list)
+    # 规则引擎识别到的 source/sink 点清单（漏报排查用），独立成文件，
+    # 不进主报告（``to_elements_json``）。
+    taint_elements: list[TaintElement] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """递归转为纯 dict（JSON 可直接序列化）。
 
-        规范版报告独立成文件（``to_canonical_json``），不进原报告结构，
+        规范版报告（``to_canonical_json``）与污点元素清单
+        （``to_elements_json``）都独立成文件，不进原报告结构，
         保持既有输出字段不变。
         """
         d = asdict(self)
         d.pop("canonical_findings", None)
+        d.pop("taint_elements", None)
         return d
 
     def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
         """序列化为 JSON 字符串；若给定 ``path`` 则同时落盘。"""
         text = json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def to_elements_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
+        """序列化污点元素清单（``list[TaintElement]``）；给定 ``path`` 则落盘。
+
+        供漏报排查：列出本次扫描识别到的全部 source/sink 点、命中规则及
+        ``covered`` 标记。
+        """
+        text = json.dumps(
+            [asdict(e) for e in self.taint_elements],
+            ensure_ascii=False,
+            indent=indent,
+        )
         if path is not None:
             Path(path).write_text(text, encoding="utf-8")
         return text

@@ -1104,6 +1104,15 @@ class CPGGraphBuilder:
             if data.get("file_path") != file_path:
                 continue
 
+            # BUG 40: 重新打标签前清掉该文件节点上可能残留的旧标签。
+            # 缓存复用时若规则集与建图时不同（如 rules/ 开/关、增删模式），
+            # 旧 taint_source/taint_sink 会残留 —— 本次匹配不到任何模式的
+            # 节点仍带着旧标签，污染 source/sink 判定。此处只清不清，
+            # 标签全部按当前规则集从零重建。
+            data.pop("taint_source", None)
+            data.pop("taint_sink", None)
+            data.pop("taint_category", None)
+
             node_type = data.get("node_type", "")
             source_text = ""
 
