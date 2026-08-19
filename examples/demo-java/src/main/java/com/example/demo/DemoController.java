@@ -6,6 +6,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.servlet.http.HttpServletResponse;
 
@@ -23,6 +25,8 @@ import org.springframework.web.bind.annotation.RestController;
  *   ③ 路径穿越     —— 拼接后进入文件系统
  *   ④ XSS（已净化）—— 展示 sanitizer 生效，标注 sanitized=True
  *   ⑤ 安全样例     —— 参数化查询，应当不产生 finding（不冤枉好人）
+ *   ⑥ 链断反例     —— 规则命中 sink 但链断在中间，应当不产生 finding（漏报样本，
+ *                      在 report.elements.json 里体现为 covered=false 的裸 sink）
  */
 @RestController
 public class DemoController {
@@ -86,6 +90,22 @@ public class DemoController {
                 conn.prepareStatement("SELECT * FROM items WHERE name = ?");
         ps.setString(1, q);                                    // sanitizer: sql_injection
         ps.executeQuery();                                     // 无污点到达，不报
+        return "ok";
+    }
+
+    // ──── ⑥ 链断反例：source 存入容器再取出 → sink 规则命中但链断在容器边界 ────
+    // 排查漏报时在 report.elements.json 里看到的「covered=false 裸 sink」就是这种：
+    //   - payload 被标成 source（注解推导）
+    //   - executeQuery(s) 被规则标成 sink
+    //   - 但 m.put() 是表达式语句、分析器不建模容器存值，m.get() 时只看到未污染的 m
+    //     → s 是干净的 → 无 finding（这是真实漏报：容器存取边界不在数据流建模内）
+    @GetMapping("/break")
+    public String brk(@RequestParam String payload) throws Exception {
+        Map<String, String> m = new HashMap<>();
+        m.put("k", payload);                 // taint stored into container (not modeled)
+        String s = m.get("k");               // load back: analyzer sees only var-ref `m`
+        Statement st = conn.createStatement();
+        st.executeQuery(s);                  // ← SINK 规则命中，但 s 未被污染 → 无 finding
         return "ok";
     }
 
