@@ -29,6 +29,13 @@
 
 ## P2（想起来了就做）
 
+- **容器 / Builder / 可变累加器存取断链**（demo 样例 ⑥）：`m.put("k", payload);
+  String s = m.get("k")`、`sb.append(payload); exec(sb.toString())` 这类
+  「写进对象内部再读出来」的链会断：写侧是表达式语句不建模，读侧只见未污染的
+  容器/Builder 变量 → 真实漏报（source/sink 都有、无 finding）。修法方向：
+  把 `put/append/setXxx` 识别为「写」、`get/getXxx/toString` 识别为「读」，
+  用别名/内部状态分析把同一对象的读写打通。数组同理（`arr[0] = payload` 的
+  target 是 `arr[0]`，后续 `sink(arr[0])` 的 var-ref 只有 `arr`，配不上）。
 - **字段敏感 / 对象属性级污点**：现在污点是「变量名级」，`obj.userInput` 和
   `obj.isAdmin` 都按变量 `obj` 传播。理想是按「敏感字段访问」传播
   （source 只进 `obj.userInput`，`obj.isAdmin` 不传播）。
@@ -57,6 +64,92 @@
   或迁到 codeql 专用区块由 `rules/` 接管。
 - **多语言冒烟矩阵**：python / javascript / go / php 各写一个最小样例跑通
   `scan()`（go/php 引擎适配器未实现，规则已备好在 `rules/go.yaml`、`rules/php.yaml`）。
+
+## 漏报面清单（FN surfaces，2026-08 全量排查）
+
+> 每条都标了来源：✅=实测确认断链（demo 样例 ⑥ / /tmp/fnprobe 五连探针），
+> ⚙️=按代码机制核实。修的顺序建议：先补 A 类状态写读（最高频真漏报），
+> 再 C/D 类（配置与规则完整性），F/G 类顺手（纯参数/缓存）。
+
+### A. 对象/容器内部状态写读 —— 整类断链（✅ 实测全断）
+
+数据流是「标量变量名级」：污点写进对象内部（容器 / Builder / 数组 / 字段 /
+setter）再从另一处读出来，链必断。写侧是表达式语句不建模，读侧只见未污染的
+宿主变量。**同一根因，四种形态**：
+- 容器：`m.put("k", t); m.get("k")`（样例 ⑥）
+- Builder / 可变累加器：`sb.append(t); sb.toString()`
+- 数组下标：`a[0] = t; sink(a[0])`（def 的 var_name 是 `a[0]`，用是 `a`，配不上）
+- setter/getter 与 `this.field`：`o.setX(t); o.getX()`、`this.buf = t; sink(this.buf)`
+
+修法：把 `put/append/setXxx/arr[i]=` 识别为「写」、`get/getXxx/toString/arr[i]`
+识别为「读」，对同一宿主做别名/内部状态传播；`this.field` 按类成员表打通。
+参考：graph.py::_add_rhs_to_lhs_edges（现行「同行桥接」粒度太粗，跨行/跨语句
+都不处理）。
+
+### B. 调用图解析盲区（⚙️ 机制确定）
+
+- **同名方法 first-wins**：`callgraph_builder.py:219` 多个文件都有 `execute` 时
+  只连第一个可达候选；危险实现在第二个 → 污点进安全实现 → 真 sink 接不到。
+- **未解析调用点整段断链**：`graph.py:747` 只有 `is_resolved` 的 call_site 才建
+  arg→param 边。接收者链 / 泛型 / 静态导入歧义解析失败时，`doThing(t)` 这种
+  表达式语句调用（无 LHS 可被 RHS→LHS 抢救）污点死在调用点 → 函数内 sink 漏。
+- **接口/多态分派**：`Base b = getImpl(); b.method(t)` 按声明类型解析，命中
+  错的实现或无实现。
+- **跨包不可达**：Java 跨包类未 import 且不同目录 → 不解析；Python/JS 相对
+  导入、`from x import *` 解析不全。
+- **依赖 jar 内部**：库包装方法内部调 sink 不可见（部分属预期，但 `Commons` /
+  `HttpClient` 等封装层很常见）。
+
+### C. 返回值追踪盲区（⚙️ dataflow.py::_trace_return_statements）
+
+- return 追踪只认「标识符 + 赋值中转」（`return x` / `y=x; return y`）：
+  `return this.x`、`return arr[0]`、`return sb.toString()` 不追踪。
+- caller 侧 return 桥接只在**调用行有 assignment** 时生效（`graph.py:853`）：
+  调用点在表达式内部 / 无 LHS（`if (isOk(t))`）返回值不接回。
+
+### D. 规则 / 匹配完整性（⚙️ taint_loader.py）
+
+- **未收录的 source/sink API 完全不可见**：子串匹配，任何不在规则表里的调用
+  连标签都不打，elements.json 里也没有 —— 新框架 / 私有封装 / 新漏洞类的最大
+  实践漏报面（`request.newName` 即此）。
+- **大小写敏感**：`pat in text`，代码里 `Request.GetParameter` 之类大小写不符
+  即不命中。
+- **sink_excludes 过宽**：正则排除表把真 sink 也排掉 → FN（`graph.py:1162`）。
+- 内置 YAML 里 CodeQL 模板噪音（`String(` 等）主要造成误报，但也稀释排查。
+
+### E. 参数 / 来源标记盲区（⚙️ graph.py::_classify_parameter_source）
+
+- **隐式绑定**：Spring 无注解的简单类型参数（`f(String id)`）按 @RequestParam
+  绑定，但分类器只认注解与 `HttpServletRequest` 类型 → 不标 source。
+- **@ModelAttribute / Body 反序列化对象字段**：整体标 `injection_general`，
+  `u.name` 的字段级传播依赖 A 类状态写读（断）。
+- **source 优先于 sink**：节点同时命中两者时只标 source（`graph.py:1150`）。
+- **重载签名查表 last-write-wins**：`func_signature_by_name` 按函数名覆盖，
+  重载方法拿错签名 → 注解分类错/漏。
+
+### F. BFS / 枚举截断（⚙️ analyzer.py::_bfs_to_sink）
+
+- **max_depth=20**：链长 >20 步的 sink 永远够不到。
+- **max_paths=5**：前 5 条 src→sink 路径填满即停，第 6+ 条路径独有的 sink 漏。
+- **max_findings_per_category=50**：单类别截断（P0-2 只提示不补全）。
+
+### G. 缓存陈旧（⚙️ graph.py::_cache_path_for / _compute_source_fingerprint）
+
+- 指纹只有 `(相对路径, 文件大小)`：改文件但大小不变 → 复用旧图，新增漏洞扫
+  不出来（体感「漏报」）。
+- 缓存 key 不含 language / rules：同目录换 language 扫 → 复用错语言图 → 标签全错。
+- 修法：指纹加文件 mtime / 内容 hash；key 加 language + rules 集 hash。
+
+### H. 行键控桥接对跨行语句（⚠️ graph.py::_add_rhs_to_lhs_edges）
+
+RHS→LHS / var_ref→call_site 按「location 字符串」精确对齐：跨行语句（拼接
+续行、多行实参）var_ref 行 ≠ assignment/call_site 行 → 桥接边漏 → 断链。
+低风险，待实测。
+
+### I. 多语言缺口（⚙️ languages/__init__.py）
+
+Go / PHP 引擎适配器未实现（规则已备在 `rules/go.yaml`、`rules/php.yaml`）——
+整个语言扫不出来；`_detect_language` 自动探测只取主语言，混合语言项目漏扫。
 
 ## 已知限制（与 README 原文对齐）
 

@@ -170,6 +170,7 @@ result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.
 - `blind_spots` 只含「无已知污点源的接口」这一种；未标记危险调用（`uncovered_sink`）
   在 `cpg/discovery.py` 里可另行调用，默认不产出以避免真实项目噪声爆炸。
 - 已知限制与优化路线图见 [`docs/TODO.md`](docs/TODO.md)（P0/P1 已完成、P2/P3 待做）。
+- 全量漏报面排查见 [`docs/漏报面清单.md`](docs/漏报面清单.md)（A–I 分类、实测断点、优化顺序）。
 
 ## 目录结构
 
