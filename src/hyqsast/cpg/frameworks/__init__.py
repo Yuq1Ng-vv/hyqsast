@@ -4,7 +4,7 @@ Each supported framework implements :class:`BaseFrameworkExtractor`.
 Adding a new framework means creating one file in this package and
 registering it below — zero changes to the CPG graph or query layer.
 
-Supported frameworks: Flask, Django, FastAPI, Express, Spring.
+Supported frameworks: Flask, Django, FastAPI, Express, Spring, Connexion.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ def available_frameworks() -> list[str]:
 
 # ── Register built-in extractors ──────────────────────────────────────────
 
+from hyqsast.cpg.frameworks.connexion import ConnexionExtractor  # noqa: E402
 from hyqsast.cpg.frameworks.django import DjangoExtractor  # noqa: E402
 from hyqsast.cpg.frameworks.express import ExpressExtractor  # noqa: E402
 from hyqsast.cpg.frameworks.fastapi import FastAPIExtractor  # noqa: E402
@@ -50,3 +51,4 @@ _register("django", DjangoExtractor)
 _register("fastapi", FastAPIExtractor)
 _register("express", ExpressExtractor)
 _register("spring", SpringExtractor)
+_register("connexion", ConnexionExtractor)

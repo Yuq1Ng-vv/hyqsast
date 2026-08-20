@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 # 语言 → 默认尝试的框架提取器（也可通过 scan(framework=...) 显式指定）
 _LANGUAGE_FRAMEWORKS: dict[str, list[str]] = {
-    "python": ["flask", "django", "fastapi"],
+    "python": ["flask", "django", "fastapi", "connexion"],
     "javascript": ["express"],
     "java": ["spring"],
 }
@@ -113,6 +113,7 @@ class Analyzer:
         self.graph_builder.add_directory(self.directory, use_cache=self.use_cache)
 
         endpoints = self._extract_endpoints()
+        self._inject_route_param_sources(endpoints)
         findings = self._build_findings()
         self._link_findings(findings, endpoints)
         blind_spots = self._build_blind_spots(endpoints) if self.include_blind_spots else []
@@ -174,6 +175,21 @@ class Analyzer:
         )
 
     # ── 污点 / 调用链 ────────────────────────────────────────────────────
+
+    def _inject_route_param_sources(self, endpoints: list[Endpoint]) -> None:
+        """把接口 handler 的声明参数标记为 source。
+
+        建图（step 1）时 Python 函数参数从不被标 source；接口提取（step 2）
+        拿到 handler + 参数名后补标（``mark_params_as_sources``），BFS
+        （step 3）才能从路由参数一路溯源到 sink。Connexion / OpenAPI-First
+        应用的路由参数只存在于 openapi yaml，这是它们唯一的污点入口。
+        """
+        specs = [
+            (e.file_path, e.handler_func, [p.name for p in e.params])
+            for e in endpoints
+            if e.handler_func
+        ]
+        self.graph_builder.mark_params_as_sources(specs)
 
     def _build_findings(self) -> list[Finding]:
         """枚举污点路径：源侧不限类别，漏洞类型由 sink 决定。

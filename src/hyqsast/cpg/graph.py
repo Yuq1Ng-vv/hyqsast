@@ -1169,6 +1169,35 @@ class CPGGraphBuilder:
                 data["taint_sink"] = ",".join(sink_cats)
                 data["taint_category"] = ",".join(sink_cats)
 
+    def mark_params_as_sources(self, specs: list[tuple[str, str, list[str]]]) -> None:
+        """把接口 handler 的命名参数标记为 source（如 Connexion/OpenAPI 路由参数）。
+
+        建图期（``_label_taint_nodes``）Python 函数参数从不被标 source ——
+        Spring/Java 有 ``@RequestParam`` 注解，Python 函数参数没有任何
+        「这是用户输入」的标记。Connexion 这类 OpenAPI-First 框架的路由
+        参数只体现在 openapi yaml 的 ``parameters`` 里，接口提取（Analyzer
+        ``_extract_endpoints``）之后才能拿到 (handler, 参数名) 对应关系。
+
+        本方法按 ``(file_path, enclosing_function, var_name)`` 定位
+        NODE_PARAMETER 并打上 ``taint_source=injection_general``，使 BFS
+        能从路由参数一路溯源到 sink。names 为空时标记该 handler 的全部参数
+        （handler 是路由函数，其参数即 HTTP 入参，召回优先）。
+        """
+        if not specs:
+            return
+        for file_path, handler, names in specs:
+            for _nid, ndata in self.graph.nodes(data=True):
+                if ndata.get("node_type") != NODE_PARAMETER:
+                    continue
+                if ndata.get("file_path") != file_path:
+                    continue
+                if ndata.get("enclosing_function") != handler:
+                    continue
+                if names and ndata.get("var_name") not in names:
+                    continue
+                ndata["taint_source"] = "injection_general"
+                ndata["taint_category"] = "injection_general"
+
     @property
     def node_count(self) -> int:
         """Total number of nodes in the graph."""
