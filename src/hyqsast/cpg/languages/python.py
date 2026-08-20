@@ -389,8 +389,13 @@ class PythonAdapter(LanguageProvider):
         if left.type in ("pattern_list", "tuple_pattern"):
             return None
 
-        # Subscript / attribute: e.g. obj.attr = ... → not a simple variable
+        # Subscript / attribute：d[k] = t、obj.attr = t、self.buf = t ——
+        # 归一化到宿主名，让 def-use / RHS→LHS 把污点送进宿主并接到宿主
+        # 后续读取（漏报面 A 类，见 graph.py::_add_container_state_edges）。
         if left.type in ("attribute", "subscript"):
+            named = [c for c in left.children if c.is_named]
+            if named and named[0].type == "identifier":
+                return named[0].text.decode("utf-8") if named[0].text else None
             return None
 
         return None

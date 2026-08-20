@@ -141,7 +141,6 @@ python:
     - .args.get(
     - .args[
     - .cleaned_data.get(
-    - .content
     - .cookies.get(
     - .form.get(
     - .form[

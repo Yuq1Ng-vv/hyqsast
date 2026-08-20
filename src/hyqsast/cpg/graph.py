@@ -241,6 +241,47 @@ def _word_in_text(name: str, text: str) -> bool:
     return re.search(pattern, text) is not None
 
 
+# 容器/Builder 内部状态「写」调用 —— 污点从这里进入宿主对象。
+# ``host.append(t)`` / ``host.put(k, t)`` / ``host.setXxx(t)`` 这类调用把
+# 实参写进 *host* 的内部状态，读侧（``host.toString()`` / ``host.get(k)`` /
+# ``host.getXxx()``）再取回来 —— 宿主变量被当作整体别名（过近似，召回优先）。
+_HOST_METHOD_RE = re.compile(
+    r"^(?P<host>[A-Za-z_$][A-Za-z0-9_$]*)\.(?P<meth>[A-Za-z_$][A-Za-z0-9_$]*)\s*\("
+)
+_CONTAINER_WRITE_METHODS = frozenset(
+    {
+        "put",
+        "add",
+        "append",
+        "push",
+        "offer",
+        "insert",
+        "merge",
+        "addAll",
+        "addFirst",
+        "addLast",
+        "putAll",
+        "putIfAbsent",
+        "putFirst",
+        "putLast",
+        "setProperty",
+        "setAttribute",
+        "putAttribute",
+        "store",
+        "enqueue",
+        "prepend",
+    }
+)
+
+
+def _is_container_write(meth: str) -> bool:
+    """判断方法名是否「向宿主内部状态写」的调用。"""
+    if meth in _CONTAINER_WRITE_METHODS:
+        return True
+    # setXxx / addXxx / putXxx 风格 setter / 累加器（``setBuf``、``addWidget``…）
+    return len(meth) > 3 and meth[:3] in ("set", "add", "put") and meth[3].isupper()
+
+
 # ─── CPG Graph Builder ───────────────────────────────────────────────────────
 
 
@@ -531,6 +572,13 @@ class CPGGraphBuilder:
             # from the argument's variable-ref dead-ends before reaching the
             # call_site sink.  This edge bridges that gap.
             self._add_varref_to_callsite_edges(path)
+
+            # 4.5c — container-state write→read bridging.
+            #
+            # `sb.append(payload); s = sb.toString();` — the write call's taint
+            # must reach the host variable's var-refs so the read side reuses
+            # the existing RHS→LHS / var_ref→call_site bridges.
+            self._add_container_state_edges(path)
 
         # 4.55 — Connect NODE_PARAMETER → NODE_ASSIGNMENT for the same
         # (enclosing_function, var_name).  Phase 1.5 of build_def_use_chains
@@ -1058,6 +1106,62 @@ class CPGGraphBuilder:
                 expr = self.graph.nodes[csid].get("expression", "")
                 if _word_in_text(vname, expr):
                     self.graph.add_edge(nid, csid, edge_type=EDGE_DATA_FLOW)
+
+    def _add_container_state_edges(self, file_path: str) -> None:
+        """容器/Builder 状态写读桥接（漏报面 A 类 / TODO P2 首项）。
+
+        ``sb.append(payload); String s = sb.toString();`` 这种「把污点写进
+        对象内部再从另一处读出来」的链此前必断：写侧（``sb.append``）是
+        表达式语句调用，读侧（``sb.toString()``）只见到未污染的宿主变量
+        ``sb`` —— 污点进不了对象内部，读回来时宿主仍是干净的。
+
+        修法：把 ``host.append(t)`` / ``host.put(k, t)`` / ``host.setXxx(t)``
+        识别为「对宿主 *host* 的内部状态写」，从写调用点连 DATA_FLOW 边到
+        该宿主在**同一函数内**的所有 var_ref。读侧复用既有桥接：
+
+        - ``String s = sb.toString();`` → RHS→LHS（``sb`` var_ref → assignment ``s``）
+        - ``st.executeQuery(o.getBuf())`` → var_ref→call_site（``o`` 出现在调用文本）
+
+        宿主变量因此被当整体污染（内部状态别名，过近似 —— 读任何字段/方法
+        都算读到污点），召回优先可接受。下标/字段赋值（``a[0] = t``、
+        ``this.buf = t``）不经过方法调用，由各语言适配器的
+        ``extract_assignment_target`` 归一化到宿主名处理。
+        """
+        # 1 — 收集本文件「内部状态写」调用点：(enclosing_function, host) → [call_site]
+        writes: dict[tuple[str, str], list[str]] = {}
+        for nid, data in self.graph.nodes(data=True):
+            if data.get("node_type") != NODE_CALL_SITE:
+                continue
+            if data.get("file_path") != file_path:
+                continue
+            expr = data.get("expression", "")
+            m = _HOST_METHOD_RE.match(expr)
+            if m is None or not _is_container_write(m.group("meth")):
+                continue
+            key = (data.get("enclosing_function", ""), m.group("host"))
+            writes.setdefault(key, []).append(nid)
+
+        if not writes:
+            return
+
+        # 2 — 收集宿主 var_ref：(enclosing_function, var_name) → [var_ref]
+        host_varrefs: dict[tuple[str, str], list[str]] = {}
+        for nid, data in self.graph.nodes(data=True):
+            if data.get("node_type") != NODE_VARIABLE_REF:
+                continue
+            if data.get("file_path") != file_path:
+                continue
+            key = (data.get("enclosing_function", ""), data.get("var_name", ""))
+            host_varrefs.setdefault(key, []).append(nid)
+
+        # 3 — 写调用点 → 宿主 var_ref
+        for (func, host), cs_ids in writes.items():
+            vids = host_varrefs.get((func, host))
+            if not vids:
+                continue
+            for csid in cs_ids:
+                for vid in vids:
+                    self.graph.add_edge(csid, vid, edge_type=EDGE_DATA_FLOW)
 
     # ── Taint node labeling ────────────────────────────────────────────────
 

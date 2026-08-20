@@ -141,7 +141,10 @@ class DataFlowBuilder:
         for node in traverser.traverse():
             if not self._node_in_range(node, body):
                 continue
-            if node.type != "identifier":
+            # Java 的 ``this`` 是独立节点类型（非 identifier）：``this.buf`` /
+            # ``this.method()`` 里的实例引用同样参与 def-use（漏报面 A 类
+            # 字段状态写读：``this.buf = t; sink(this.buf)``）。
+            if node.type not in ("identifier", "this"):
                 continue
             if not provider.is_variable_identifier(node):
                 continue

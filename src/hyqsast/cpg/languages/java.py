@@ -299,11 +299,26 @@ class JavaAdapter(LanguageProvider):
             return None
         if left.type == "identifier":
             return left.text.decode("utf-8") if left.text else None
-        # Field access / array access: not a simple variable
+        # 容器/内部状态写：a[0] = t、this.buf = t、o.field = t —— 归一化到
+        # 宿主名，让 def-use / RHS→LHS 把污点送进宿主并接到宿主后续读取
+        # （漏报面 A 类，见 graph.py::_add_container_state_edges）。
+        return self._container_host(left)
+
+    @staticmethod
+    def _container_host(node: Node) -> str | None:
+        """从 array_access / field_access 取宿主名（内部状态写读别名）。"""
+        if node.type in ("array_access", "field_access"):
+            named = [c for c in node.children if c.is_named]
+            if named and named[0].type in ("identifier", "this"):
+                return named[0].text.decode("utf-8") if named[0].text else None
         return None
 
     def is_variable_identifier(self, node: Node) -> bool:
         """Check whether an ``identifier`` node is a variable reference."""
+        # Java 的 ``this`` 是独立节点类型：``this.buf`` / ``this.method()`` 里
+        # 的实例引用算变量（字段状态写读别名，漏报面 A 类）。
+        if node.type == "this":
+            return True
         if node.type != "identifier":
             return False
         parent = node.parent
