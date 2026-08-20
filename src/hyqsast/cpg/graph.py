@@ -486,7 +486,10 @@ class CPGGraphBuilder:
                     var_name=du.var_name,
                     file_path=path,
                     location=du.def_location,
-                    source=du.def_expression[:120],
+                    # 存完整 def_expression —— 截断会切掉长 RHS（多行模板
+                    # ``template = '''...''' % request.url``）尾部的污点来源，
+                    # 导致 source/sink 匹配失效（漏报）。展示侧截断由报告层做。
+                    source=du.def_expression,
                     enclosing_function=fn.name,
                 )
                 # DATA_FLOW: function → assignment (the function contains this def)

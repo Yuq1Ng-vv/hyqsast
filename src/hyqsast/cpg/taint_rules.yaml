@@ -1,4 +1,10 @@
 python:
+  # sink_excludes：正则在候选 sink 文本上 re.search，命中则丢弃 sink 标签。
+  # 这里排除「显式 verify=True 的 jwt.decode」——它是安全的签名校验用法，
+  # 不应报 auth_bypass；而 verify=False 或未指定 verify 的 decode 仍按
+  # 不安全用法保留（召回优先，误报可接受）。
+  sink_excludes:
+  - 'jwt\.decode\(.*verify\s*=\s*True'
   sources:
     sql_injection:
     - .FILES.get(
@@ -40,7 +46,6 @@ python:
     - tomllib.load(
     - websocket.receive_json(
     - websocket.receive_text(
-    - yaml.safe_load(
     - 'from pyramid.view import view_config
 
       ...
@@ -52,6 +57,12 @@ python:
 
       def $FUNC(..., $ROUTEVAR, ...):'
     - 'def $HANDLER(event, context):'
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - f"..."
     command_injection:
     - .args.get(
@@ -82,8 +93,6 @@ python:
     - websocket.receive_json(
     - websocket.receive_text(
     - werkzeug.datastructures.FileStorage
-    - yaml.load(
-    - yaml.safe_load(
     - '" ".join($LIST)'
     - os.environ
     - 'def $FUNC(request, ...):'
@@ -119,6 +128,12 @@ python:
     - 'class $SERVER(..., http.server.DatagramRequestHandler, ...):'
     - sys.argv[...]
     - 'def $HANDLER(event, context):'
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - os.getenvb('$ANYTHING', ...)
     - 'def $METHOD(self, $REQ, ...):'
     xss:
@@ -143,12 +158,17 @@ python:
     - File(
     - Form(
     - document.getElementById(
-    - markdown.markdown(
     - model_to_dict(
     - request.data.get(
     - response.json(
     - urllib.parse.urlparse(
     - urlparse(
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - websocket.receive_text(
     - '@pyramid.view.view_config( ... )
 
@@ -193,7 +213,12 @@ python:
     - sys.argv
     - tarfile.getnames(
     - werkzeug.datastructures.FileStorage
-    - yaml.safe_load(
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - zipfile.ZipFile.namelist(
     ssrf:
     - .args.get(
@@ -220,13 +245,16 @@ python:
     - avatar_url
     - image_url
     - json.loads(
-    - lxml.etree.parse(
-    - lxml.objectify.parse(
     - os.getenv(
     - request.data.get(
     - sys.argv
     - websocket_url
-    - yaml.safe_load(
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - '@$APP.route(...)
 
       def $FUNC(..., $ROUTEVAR, ...):'
@@ -248,16 +276,15 @@ python:
     - avro.schema.Parse(
     - base64.b64decode(
     - binascii.a2b_base64(
-    - fastavro.reader(
     - itsdangerous.URLSafeTimedSerializer
-    - lxml.objectify.fromstring(
-    - msgpack.loads(
-    - msgpack.unpackb(
     - request.body
     - request.data
-    - xml.etree.ElementTree.fromstring(
-    - yaml.compose(
-    - yaml.compose_all(
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - 'def $HANDLER(event, context):'
     - 'def $INSIDE(..., $PARAM, ...):'
     open_redirect:
@@ -285,6 +312,12 @@ python:
     - request.data.get(
     - request.headers.get(
     - return_url
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - sys.argv
     code_injection:
     - .args.get(
@@ -298,17 +331,11 @@ python:
     - .query_params.get(
     - .values.get(
     - Body(
-    - Environment(
     - Form(
     - Query(
-    - Template(
     - dill.dumps(
-    - django.template.Engine(
-    - django.template.Template(
-    - jinja2.Template(
     - os.getenv(
     - pickle.dumps(
-    - render_template_string(
     - request.data.get(
     - sys.argv
     - os.environb
@@ -337,6 +364,12 @@ python:
     - 'def $HANDLER(event, context):'
     - self.headers[...]
     - 'class $SERVER(..., http.server.StreamRequestHandler, ...):'
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - os.getenvb('$ANYTHING', ...)
     - 'def $METHOD(self, $REQ, ...):'
     auth_bypass:
@@ -348,8 +381,6 @@ python:
     - .json.get(
     - Authorization
     - 'Bearer '
-    - X-API-Key
-    - api_key
     - authorization
     - 'bearer '
     - client_id
@@ -357,9 +388,13 @@ python:
     - request.data.get(
     - request.session[
     - reset_token
-    - session.get(
     - state
-    - token
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     xxe:
     - .args.get(
     - .data
@@ -373,6 +408,12 @@ python:
     - File(
     - UploadFile(
     - request.body
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - request.data
     ssti:
     - .args.get(
@@ -392,13 +433,14 @@ python:
     - File(
     - Form(
     - Query(
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - request.data.get(
     crypto_weakness:
-    - cryptography.hazmat.primitives.hashes.MD5
-    - Crypto.Hash.MD5
-    - hashlib.new(..., name="MD5", ...)
-    - Cryptodome.Hash.MD5
-    - hashlib.md5
     xpath_injection:
     - '"..." %'
     - 'def $F(..., $ARG, ...):'
@@ -446,7 +488,6 @@ python:
     - tomllib.load(
     - websocket.receive_json(
     - websocket.receive_text(
-    - yaml.safe_load(
     - 'from pyramid.view import view_config
 
       ...
@@ -458,6 +499,12 @@ python:
 
       def $FUNC(..., $ROUTEVAR, ...):'
     - 'def $HANDLER(event, context):'
+    - request.json
+    - request.files
+    - request.form
+    - request.values
+    - request.args
+    - request.cookies
     - f"..."
   sinks:
     sql_injection:
@@ -1018,12 +1065,7 @@ python:
     - web.HTTPSeeOther(
     - web.HTTPTemporaryRedirect(
     code_injection:
-    - Environment(
-    - Environment.from_string(
-    - Environment.get_template(
     - IPython.display.
-    - Template(
-    - Template.render(
     - __import__(
     - ast.literal_eval(
     - ast.parse(
@@ -1033,10 +1075,6 @@ python:
     - compile(
     - delattr(
     - dis.disassemble(
-    - django.template.Context(
-    - django.template.Engine(
-    - django.template.Template(
-    - django.template.loader.
     - django.template.loader.render_to_string(
     - eval(
     - exec(
@@ -1044,21 +1082,13 @@ python:
     - hasattr(
     - importlib.import_module(
     - ipywidgets.
-    - jinja2.Environment(
-    - jinja2.Template(
-    - loader.get_template(
-    - mako.template.Template(
     - marshal.loads(
     - pipes.quote(
-    - render_template(
-    - render_template_string(
     - setattr(
     - shlex.split(
     - subprocess.Popen(shell=True)
     - subprocess.call(shell=True)
     - subprocess.run(shell=True)
-    - tornado.template.Loader(
-    - tornado.template.Template(
     - types.CodeType(
     - types.FunctionType(
     - types.ModuleType(
@@ -1163,6 +1193,7 @@ python:
     - xml.sax.parse(
     - xml.sax.parseString(
     - xmltodict.parse(
+    - Document(
     ssti:
     - Engine.from_string(
     - Environment(
@@ -1187,7 +1218,6 @@ python:
     - loader.get_template(
     - mako.lookup.TemplateLookup(
     - mako.template.Template(
-    - render_template(
     - render_template_string(
     - render_to_string(
     - tornado.template.Loader(

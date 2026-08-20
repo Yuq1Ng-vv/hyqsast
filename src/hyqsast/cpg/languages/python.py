@@ -330,10 +330,16 @@ class PythonAdapter(LanguageProvider):
         if func_expr is None:
             return None
 
-        full = func_expr.text.decode("utf-8") if func_expr.text else ""
+        # full_expression 取**整个调用**文本（含括号与实参），与 Java 提供器
+        # 一致。裸调用表达式语句（``render_template_string(tpl, ...)``）的
+        # call_site 节点用这个文本做 sink 子串匹配 —— 只取函数表达式的话
+        # 没有 ``(``，``render_template_string(`` 这类 sink 模式永远命中不了。
+        # bare_name 仍只取 callee 末段，供调用图解析（不变）。
+        full = node.text.decode("utf-8") if node.text else ""
 
         if func_expr.type == "identifier":
-            return (full, full, False)
+            bare = func_expr.text.decode("utf-8") if func_expr.text else full
+            return (bare, full, False)
 
         if func_expr.type == "attribute":
             named = [c for c in func_expr.children if c.is_named]
