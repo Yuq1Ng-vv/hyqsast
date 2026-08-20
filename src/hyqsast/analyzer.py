@@ -33,6 +33,7 @@ from hyqsast.schema import (
     CanonicalFinding,
     ChainStep,
     Endpoint,
+    EndpointMatch,
     Finding,
     NodeRef,
     RouteParam,
@@ -113,8 +114,9 @@ class Analyzer:
 
         endpoints = self._extract_endpoints()
         findings = self._build_findings()
+        self._link_findings(findings, endpoints)
         blind_spots = self._build_blind_spots(endpoints) if self.include_blind_spots else []
-        canonical = self._build_canonical_findings(findings, endpoints)
+        canonical = self._build_canonical_findings(findings)
         taint_elements = self._collect_taint_elements(findings)
 
         return ScanResult(
@@ -419,11 +421,48 @@ class Analyzer:
 
     # ── 规范版报告 ───────────────────────────────────────────────────────
 
-    def _build_canonical_findings(
+    def _link_findings(self, findings: list[Finding], endpoints: list[Endpoint]) -> None:
+        """把每条 finding 关联到最可能的接口（原地打上 ``f.endpoint``）。
+
+        匹配依据见 :meth:`_endpoint_match_for_finding`；供 LLM 下游把漏洞
+        直接对应到具体路由，无需自己 join ``endpoints`` 表。
+        """
+        for f in findings:
+            f.endpoint = self._endpoint_match_for_finding(f, endpoints)
+
+    def _endpoint_match_for_finding(
         self,
-        findings: list[Finding],
+        f: Finding,
         endpoints: list[Endpoint],
-    ) -> list[CanonicalFinding]:
+    ) -> EndpointMatch:
+        """返回 finding 与接口的对应关系（``exact`` / ``same_file`` / ``unmatched``）。
+
+        以 finding 的 source（污点入口）为准：优先 ``(文件, handler)`` 精确
+        匹配，退回同文件第一个接口，都没有则 ``unmatched``。接口摘要字段
+        冗余展开（不引用 endpoints 下标），保证 LLM 单条 finding 即可自洽。
+        """
+        src = f.source
+        exact = [
+            ep
+            for ep in endpoints
+            if ep.file_path == src.file_path and ep.handler_func == src.function
+        ]
+        candidates = exact or [ep for ep in endpoints if ep.file_path == src.file_path]
+        if not candidates:
+            return EndpointMatch(match="unmatched")
+        ep = candidates[0]
+        return EndpointMatch(
+            match="exact" if exact else "same_file",
+            route=ep.route,
+            methods=list(ep.methods),
+            handler_func=ep.handler_func,
+            file_path=ep.file_path,
+            line=ep.line,
+            framework=ep.framework,
+            params=list(ep.params),
+        )
+
+    def _build_canonical_findings(self, findings: list[Finding]) -> list[CanonicalFinding]:
         """构建规范版报告：sink 函数完整源码 + 函数级真实调用链 + 接口信息。
 
         与正常报告一一对应，但更面向人工复核：调用链折叠成函数级
@@ -434,7 +473,7 @@ class Analyzer:
                 id=f.id,
                 vuln_type=f.vuln_type,
                 vuln_name=(f"{vuln_display_name(f.vuln_type)} @ {f.sink.file_path}:{f.sink.line}"),
-                endpoint=self._endpoint_for_finding(f, endpoints),
+                endpoint=self._render_endpoint(f.endpoint),
                 sink_function=self._sink_function_block(f),
                 call_chain=self._render_chain(f),
             )
@@ -442,20 +481,12 @@ class Analyzer:
         ]
 
     @staticmethod
-    def _endpoint_for_finding(f: Finding, endpoints: list[Endpoint]) -> str:
-        """找漏洞所在接口：优先 ``(文件, handler)`` 精确匹配，退回同文件第一个。"""
-        src = f.source
-        exact = [
-            ep
-            for ep in endpoints
-            if ep.file_path == src.file_path and ep.handler_func == src.function
-        ]
-        candidates = exact or [ep for ep in endpoints if ep.file_path == src.file_path]
-        if not candidates:
+    def _render_endpoint(m: EndpointMatch) -> str:
+        """把 :class:`EndpointMatch` 渲染成规范版报告的接口串；``unmatched`` 返回空串。"""
+        if m.match == "unmatched":
             return ""
-        ep = candidates[0]
-        methods = "/".join(ep.methods) or "ANY"
-        return f"{methods} {ep.route} @ {ep.file_path}:{ep.line} ({ep.handler_func})"
+        methods = "/".join(m.methods) or "ANY"
+        return f"{methods} {m.route} @ {m.file_path}:{m.line} ({m.handler_func})"
 
     def _sink_function_block(self, f: Finding, margin: int = 5) -> str:
         """返回 sink 点所在函数的完整源码：带行号，sink 行标 ``▶`` 并尾注类别。

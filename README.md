@@ -87,11 +87,21 @@ result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.
         {"file_path":"...","line":20,"function":"getUser","code":"...",
          "kind":"assignment","edge_type":"DATA_FLOW"}
       ],
-      "sanitizers": [], "sanitized": false }
+      "sanitizers": [], "sanitized": false,
+      "endpoint": { "match": "exact", "route": "/users", "methods": ["GET"],
+                    "handler_func": "getUser", "file_path": "...", "line": 12,
+                    "framework": "spring", "params": [...] } }
   ],
   "blind_spots": [ { "kind":"endpoint_no_source", "location":"...", "reason":"...", "recommendation":"..." } ]
 }
 ```
+
+每条 finding 的 **`endpoint`** 字段把漏洞对应到具体 HTTP 接口（冗余展开接口摘要，
+供 LLM 下游直接消费，无需再 join `endpoints` 表）。`match` 表示匹配程度：
+
+- `"exact"`：finding 的 source 所在 `(文件, 函数)` 与接口的 `(file_path, handler_func)` 完全一致；
+- `"same_file"`：同文件内有接口但 handler 名对不上，按同文件第一个接口退化匹配（相关但不完全确定）；
+- `"unmatched"`：source 所在文件里没有识别到任何接口。
 
 ## 规范版报告（`report.canonical.json`）
 

@@ -140,6 +140,28 @@ class ChainStep:
 
 
 @dataclass
+class EndpointMatch:
+    """Finding → 接口的对应关系。
+
+    ``match`` 取值（供 LLM 下游区分可靠关联与兜底/缺失）：
+    - ``exact``：finding 的 source 所在 (文件, 函数) 与某接口的
+      (file_path, handler_func) 完全一致；
+    - ``same_file``：同文件内有接口但 handler 名对不上 —— 取同文件
+      第一个接口（相关但不完全确定）；
+    - ``unmatched``：source 所在文件里没有任何已识别接口。
+    """
+
+    match: str = "unmatched"  # exact / same_file / unmatched
+    route: str = ""
+    methods: list[str] = field(default_factory=list)
+    handler_func: str = ""
+    file_path: str = ""
+    line: int = 0
+    framework: str = ""
+    params: list[RouteParam] = field(default_factory=list)
+
+
+@dataclass
 class Finding:
     """一条污点漏洞（source → sink 的完整传播路径）。"""
 
@@ -154,6 +176,9 @@ class Finding:
     # P1-5: 相同 (source, sink) 的多类别候选被聚合后，其余类别收在这里。
     # 主 vuln_type 取严重级别最高、sink 模式最具体者。
     related_categories: list[str] = field(default_factory=list)
+    # P1-6: 与 HTTP 接口的关联（exact / same_file / unmatched），供 LLM
+    # 下游把漏洞直接对应到具体路由，无需自己 join endpoints 表。
+    endpoint: EndpointMatch = field(default_factory=EndpointMatch)
 
 
 @dataclass

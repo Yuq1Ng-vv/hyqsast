@@ -114,8 +114,14 @@ def main(argv: list[str] | None = None) -> int:
 def _fmt_finding(f: Finding) -> str:
     sev = f.severity.upper()
     related = f"  (相关: {','.join(f.related_categories)})" if f.related_categories else ""
+    ep = f.endpoint
+    if ep.match == "unmatched":
+        ep_str = "未关联接口 (unmatched)"
+    else:
+        ep_str = f"{'/'.join(ep.methods) or 'ANY'} {ep.route} -> {ep.handler_func}  [{ep.match}]"
     return (
         f"  [{sev:8s}] {f.vuln_type}{related}\n"
+        f"    endpoint: {ep_str}\n"
         f"    source: {f.source.code.strip()[:60]}  ({f.source.file_path}:{f.source.line})\n"
         f"    sink:   {f.sink.code.strip()[:60]}  ({f.sink.file_path}:{f.sink.line})\n"
         f"    chain:  {len(f.call_chain)} 步"
