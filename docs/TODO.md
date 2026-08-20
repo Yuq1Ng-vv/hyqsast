@@ -26,16 +26,30 @@
   272=272 无召回损失，342→272 条全部来自聚合。
 - **dataflow 返回值追踪**（`dataflow.py::_trace_return_statements`，BUG 37）
   callee `return x` / `y=x; return y` 跨函数追回 caller（`call_return` 步骤）。
+- **容器 / Builder 状态写读桥接**（`graph.py::_add_container_state_edges`，
+  漏报面 A 类）：`host.put(k,t)` / `host.append(t)` / `host.setXxx(t)` 识别为
+  「对宿主内部状态写」，从写调用点连 DATA_FLOW 边到同函数内该宿主所有 var_ref，
+  读侧复用 RHS→LHS / var_ref→call_site 桥接。demo ⑥ 容器与 Builder 形态
+  实测接住。
+- **跨函数静态/全局/实例字段状态桥接**（`graph.py::_add_state_bridge` +
+  各语言 `collect_state_slots`，漏报面 J 类）：模块全局 / static 字段 /
+  `this`/`self` 实例字段的跨函数写→读连通；`this`/`self` 按类收敛避免跨类
+  串扰。静态字段 / 静态容器 / 模块全局 / 实例字段探针全部实测命中。
+- **sink 遮蔽修复**（`analyzer.py::_bfs_to_sink` record-and-continue，
+  漏报面 K 类）：BFS 命中 sink 后**记录路径并继续扩张**，不再让中间被过宽规则
+  误标成 sink 的节点遮蔽下游真 sink（如 `String s = foo.build(p)` 遮蔽
+  `exec(s)`）。
+- **BUG 42 联动收窄**（防误报、不增漏报，基准 TP 零变化）：移除裸 `.build(`
+  （java ssrf）与 `String(`（java sql_injection）；容器写跳过 sanitizer 调用
+  （`ps.setString(1,q)` 不再向宿主 `ps` 传污点）。三条都以「真实执行 API 另有
+  更精确 pattern 覆盖 / 本身是安全绑定 API」为前提，按缺陷平衡铁律保留其余
+  裸类型名（`Query(` / `SQLiteStatement(` 等）防漏报。
 
 ## P2（想起来了就做）
 
-- **容器 / Builder / 可变累加器存取断链**（demo 样例 ⑥）：`m.put("k", payload);
-  String s = m.get("k")`、`sb.append(payload); exec(sb.toString())` 这类
-  「写进对象内部再读出来」的链会断：写侧是表达式语句不建模，读侧只见未污染的
-  容器/Builder 变量 → 真实漏报（source/sink 都有、无 finding）。修法方向：
-  把 `put/append/setXxx` 识别为「写」、`get/getXxx/toString` 识别为「读」，
-  用别名/内部状态分析把同一对象的读写打通。数组同理（`arr[0] = payload` 的
-  target 是 `arr[0]`，后续 `sink(arr[0])` 的 var-ref 只有 `arr`，配不上）。
+- **数组下标断链**（A 类剩余）：`a[0] = t; sink(a[0])` —— def 的 var_name 是
+  `a[0]`，用是 `a`，配不上。容器/Builder/字段形态已由状态桥接接住，仅数组
+  下标需把 var_name 归一化到宿主 `a`。
 - **字段敏感 / 对象属性级污点**：现在污点是「变量名级」，`obj.userInput` 和
   `obj.isAdmin` 都按变量 `obj` 传播。理想是按「敏感字段访问」传播
   （source 只进 `obj.userInput`，`obj.isAdmin` 不传播）。
@@ -71,26 +85,32 @@
 > ⚙️=按代码机制核实。修的顺序建议：先补 A 类状态写读（最高频真漏报），
 > 再 C/D 类（配置与规则完整性），F/G 类顺手（纯参数/缓存）。
 >
+> **已修复（2026-08-20）**：A 类（容器/Builder 状态写读）、J 类（跨函数
+> 状态桥接）、K 类（sink 遮蔽 record-and-continue）均已落地，详见「已完成」
+> 节；完整细节与代价见 `docs/漏报面清单.md`。剩余断点按底部「建议优先顺序」。
+> **已知代价**：状态桥接 + record-and-continue 使 Python 基准误报上升
+> （vfa 5→14 / flask-xss 9→19 / vampi 20→62），**TP 不变（6/3/1）**。
+>
 > **实测盲区**：确认「优化不动/暂缓」的漏报按项目累积在
 > `docs/结构性漏报盲区.md`（A–G 分类，与本文档 A–I 是两套编号）。
 >
 > **已完成**：2026-08-20 用 Connexion 提取器 + 路由参数 source 注入补上
 > 「框架路由参数无 source」缺口（见结构性盲区文档 F 节），vampi SQLi 转 TP。
 
-### A. 对象/容器内部状态写读 —— 整类断链（✅ 实测全断）
+### A. 对象/容器内部状态写读 —— ✅ 已修复（2026-08-20，除数组下标）
 
 数据流是「标量变量名级」：污点写进对象内部（容器 / Builder / 数组 / 字段 /
 setter）再从另一处读出来，链必断。写侧是表达式语句不建模，读侧只见未污染的
 宿主变量。**同一根因，四种形态**：
-- 容器：`m.put("k", t); m.get("k")`（样例 ⑥）
-- Builder / 可变累加器：`sb.append(t); sb.toString()`
-- 数组下标：`a[0] = t; sink(a[0])`（def 的 var_name 是 `a[0]`，用是 `a`，配不上）
-- setter/getter 与 `this.field`：`o.setX(t); o.getX()`、`this.buf = t; sink(this.buf)`
+- 容器：`m.put("k", t); m.get("k")`（样例 ⑥）—— ✅ `_add_container_state_edges`
+- Builder / 可变累加器：`sb.append(t); sb.toString()` —— ✅ 同上
+- 数组下标：`a[0] = t; sink(a[0])`（def 的 var_name 是 `a[0]`，用是 `a`，配不上）—— ⚠️ 仍断
+- setter/getter 与 `this.field`：`o.setX(t); o.getX()`、`this.buf = t; sink(this.buf)`—— ✅ 容器桥接 + `_add_state_bridge`
 
-修法：把 `put/append/setXxx/arr[i]=` 识别为「写」、`get/getXxx/toString/arr[i]`
-识别为「读」，对同一宿主做别名/内部状态传播；`this.field` 按类成员表打通。
-参考：graph.py::_add_rhs_to_lhs_edges（现行「同行桥接」粒度太粗，跨行/跨语句
-都不处理）。
+修法（已落地）：`put/append/setXxx` 识别为「写」、`get/getXxx/toString` 识别
+为「读」，对同一宿主做别名/内部状态传播；`this.field` 按类成员表打通
+（`collect_state_slots` + `_add_state_bridge`，见漏报面 J 类）。剩余数组下标
+需把 var_name 归一化到宿主 `a`。
 
 ### B. 调用图解析盲区（⚙️ 机制确定）
 
@@ -156,6 +176,32 @@ RHS→LHS / var_ref→call_site 按「location 字符串」精确对齐：跨行
 
 Go / PHP 引擎适配器未实现（规则已备在 `rules/go.yaml`、`rules/php.yaml`）——
 整个语言扫不出来；`_detect_language` 自动探测只取主语言，混合语言项目漏扫。
+
+### J. 跨函数静态/全局/实例字段状态 —— ✅ 已修复（2026-08-20）
+
+def-use 是函数内的、容器写桥接也只在同函数生效 —— 状态（模块全局 /
+static 字段 / `this`/`self` 实例字段）一旦越过函数边界就断链：
+
+- `gbuf = p`（端点 A）→ `exec(gbuf)`（端点 B）
+- `queue.add(p)`（A）→ `for x : queue { exec(x) }`（B）
+- `this.buf = p`（A）→ `exec(this.buf)`（B）
+
+修法：`graph.py::_add_state_bridge` + 各语言 `collect_state_slots` —— 收拢
+「越函数边界仍存活」的名字（字段声明 / 模块顶层赋值 / `self.X=`，排除函数内
+局部变量），建图末期把状态写节点连到状态读节点；`this`/`self` 按类收敛。
+探针（静态字段/静态容器/模块全局/实例字段）全部实测命中；Python 基准误报
+上升但 TP 一条不少（见上「已知代价」）。
+
+### K. sink 遮蔽下游真 sink —— ✅ 已修复（2026-08-20）
+
+BFS 旧实现**命中 sink 即终止路径**——中间节点被过宽规则误标成 sink（如
+`String s = foo.build(p)` 命中裸 `.build(`）时，下游真 sink（`exec(s)`）
+永远探索不到，真实漏洞被误报遮蔽成漏报。
+
+修法：`_bfs_to_sink` record-and-continue（命中 sink 记录路径后继续扩张）。
+联动收窄（BUG 42，防误报、不增漏报）：移除裸 `.build(`（java ssrf）、
+`String(`（java sql_injection），容器写跳过 sanitizer 调用 —— 三条都以
+更精确 pattern 覆盖 / 安全绑定 API 为前提，基准 TP 零变化。
 
 ## 已知限制（与 README 原文对齐）
 

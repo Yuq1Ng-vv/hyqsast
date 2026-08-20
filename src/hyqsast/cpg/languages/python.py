@@ -400,6 +400,44 @@ class PythonAdapter(LanguageProvider):
 
         return None
 
+    def collect_state_slots(self, tree: Tree) -> set[str]:
+        """收集模块全局 / 类属性 / 实例属性名 —— 跨函数状态槽（漏报面 J 类）。
+
+        只收「越函数边界仍存活」的名字：
+        - 模块顶层赋值（``box = []``）→ 模块全局；
+        - 类体直接赋值 → 类属性；
+        - ``self.X = ...`` 写 → 实例属性。
+        函数内局部变量排除在外，避免不同函数同名局部变量被跨函数串起来。
+        """
+        slots: set[str] = set()
+        root = tree.root_node
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            if node.type == "assignment":
+                left = node.child_by_field_name("left")
+                if left is not None:
+                    if left.type == "identifier" and left.text:
+                        if self._is_state_scope(node, root):
+                            slots.add(left.text.decode("utf-8"))
+                    elif left.type == "attribute":
+                        named = [c for c in left.children if c.is_named]
+                        if named and named[0].type == "identifier" and named[0].text:
+                            if named[0].text.decode("utf-8") == "self" and named[-1].text:
+                                slots.add(named[-1].text.decode("utf-8"))
+            stack.extend(node.named_children)
+        return slots
+
+    @staticmethod
+    def _is_state_scope(node: Node, root: Node) -> bool:
+        """向上走到 root 前没有 function_definition 边界即模块/类状态作用域。"""
+        parent = node.parent
+        while parent is not None and parent is not root:
+            if parent.type in ("function_definition", "decorated_definition"):
+                return False
+            parent = parent.parent
+        return True
+
     def is_variable_identifier(self, node: Node) -> bool:
         """Check whether an ``identifier`` node is a variable reference.
 

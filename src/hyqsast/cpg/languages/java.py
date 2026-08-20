@@ -313,6 +313,27 @@ class JavaAdapter(LanguageProvider):
                 return named[0].text.decode("utf-8") if named[0].text else None
         return None
 
+    def collect_state_slots(self, tree: Tree) -> set[str]:
+        """收集类字段名 —— 跨函数状态槽（漏报面 J 类）。
+
+        ``field_declaration``（``static String gbuf;``、``List<String> q;``）
+        是类体里直接声明的状态；同一名字在另一个方法里读写就是跨函数状态
+        流（``gbuf = p`` 一处写、``exec(gbuf)`` 另一处读）。只收字段名，
+        把函数内同名局部变量排除在外。
+        """
+        slots: set[str] = set()
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "field_declaration":
+                for child in node.named_children:
+                    if child.type == "variable_declarator":
+                        name_node = child.child_by_field_name("name")
+                        if name_node is not None and name_node.text:
+                            slots.add(name_node.text.decode("utf-8"))
+            stack.extend(node.named_children)
+        return slots
+
     def is_variable_identifier(self, node: Node) -> bool:
         """Check whether an ``identifier`` node is a variable reference."""
         # Java 的 ``this`` 是独立节点类型：``this.buf`` / ``this.method()`` 里

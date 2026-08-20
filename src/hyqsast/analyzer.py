@@ -332,8 +332,13 @@ class Analyzer:
                 continue
 
             if cur in sink_set and cur != src:
+                # 记录路径后【继续扩张】，不要终止：sink 节点可能是中间节点
+                # （如被过宽规则误标成 sink 的赋值节点 ``String s = foo.build(p)``）。
+                # 在此终止会遮蔽下游真 sink（漏报面 K 类：sink 遮蔽下游真 sink）——
+                # ``s`` 后面跟着的 ``exec(s)`` 就永远探索不到。
                 results.append((node_path, edge_path))
-                continue
+                if len(results) >= max_paths:
+                    break
 
             for succ in graph.successors(cur):
                 if succ in visited:

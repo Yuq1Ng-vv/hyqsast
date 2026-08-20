@@ -274,6 +274,23 @@ class TaintRuleLoader:
                     break
         return matches
 
+    def match_all_sanitizers(self, language: str, text: str) -> list[str]:
+        """Return ALL category names whose sanitizer patterns match *text*.
+
+        供图构建侧做「sanitizer 门控」：容器写调用点若命中任何类别的
+        sanitizer（如 ``ps.setString(1, q)`` 命中 sql_injection 的
+        ``.setString(``），说明该调用是安全绑定/加固 API，参数污点不应
+        通过它写入宿主（见 graph.py::_add_container_state_edges）。
+        """
+        rules = self.rules_for(language)
+        matches: list[str] = []
+        for cat_name, cat in rules.categories.items():
+            for pat in cat.sanitizers:
+                if pat and pat in text:
+                    matches.append(cat_name)
+                    break
+        return matches
+
     @property
     def available_languages(self) -> list[str]:
         """Languages with rules defined in the YAML file."""

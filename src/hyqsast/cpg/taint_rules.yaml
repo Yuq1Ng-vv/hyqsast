@@ -3885,6 +3885,13 @@ java:
     - (String $A)
     - (java.sql.PreparedStatement $STMT) = ...;
     - String.format($VAR, ...)
+    # BUG 42 (误报面 K 类联动): ``String(`` 是 CodeQL 模板被压平的裸类型名，
+    # 任意含 ``String(`` 的调用（连 ``new String(bytes)``）都会被误标成
+    # sql_injection（demo ③ download 的 FP）。真正的 SQL sink 是执行类 API
+    # （executeQuery/createQuery/rawQuery 等，上文保留），``String(`` 只贡献
+    # 误报、无召回价值，故移除。其余裸类型名（Query( / ResultSet( / Cursor( /
+    # SQLiteStatement( 等）虽同样偏宽，但存在「靠声明点标签兜底」的潜在召回
+    # 场景，按「解决误报的前提是不增加漏报」铁律保留，仅对已实证的 FP 动手。
     - PreparedQuery(
     - Cursor(
     - PreparedStatementCreator(
@@ -3896,7 +3903,6 @@ java:
     - TypedQuery(
     - String;I)I:2,4(
     - Object(
-    - String(
     - Vector(
     - PreparedStatement(
     - ScalaAnorm(
@@ -4116,7 +4122,9 @@ java:
     - RestTemplate.
     - WebClient.create(
     - WebClient.builder(
-    - .build(
+    # 裸 .build( 太宽：任意 Builder.build() / Svc.build() 都命中，且会把赋值
+    # 节点误标成 ssrf sink、遮蔽下游真 sink（漏报面 K 类）。接收者限定模式
+    # 已覆盖真实 HTTP 客户端（RestTemplateBuilder.build( 等）。
     - .retrieve(
     - .bodyToMono(
     - .bodyToFlux(

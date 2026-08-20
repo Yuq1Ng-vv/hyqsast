@@ -404,6 +404,12 @@ class DataFlowBuilder:
         Compares location strings since we no longer have the original
         use Node objects after the single-pass optimization.
         """
+        # BUG 41: 增强 for（``for (String x : queue) { exec(x); }``）的 def 是
+        # 整条循环语句，体内对 ``x`` 的用与循环头在同一行。按行排除会把这些
+        # 真实 use 全剔掉 → x 的 def-use 链断（跨函数状态桥接接进 for 后无
+        # 后继，漏报面 J 类静态容器遍历即此）。
+        if def_node.type == "enhanced_for_statement":
+            return False
         def_loc = _loc(def_node, file_path)
         return loc == def_loc
 

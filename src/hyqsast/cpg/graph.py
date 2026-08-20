@@ -278,8 +278,46 @@ def _is_container_write(meth: str) -> bool:
     """判断方法名是否「向宿主内部状态写」的调用。"""
     if meth in _CONTAINER_WRITE_METHODS:
         return True
+
     # setXxx / addXxx / putXxx 风格 setter / 累加器（``setBuf``、``addWidget``…）
     return len(meth) > 3 and meth[:3] in ("set", "add", "put") and meth[3].isupper()
+
+
+def _all_sanitizer_patterns(loader: TaintRuleLoader, language: str) -> list[str]:
+    """该语言全部类别的 sanitizer 子串模式（小写去重）。
+
+    供容器写桥接做 sanitizer 门控：只按子串匹配，不做类别区分 —— 命中任何
+    类别的 sanitizer 都视为「安全 API」。依赖的规则经 ``rules_for`` 懒加载。
+    """
+    rules = loader.rules_for(language)
+    seen: set[str] = set()
+    out: list[str] = []
+    for cat in rules.categories.values():
+        for pat in cat.sanitizers:
+            p = pat.lower()
+            if p and p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
+
+
+def _matches_any(text_lower: str, patterns: set[str]) -> bool:
+    """*text_lower* 是否含任一 pattern（子串匹配）。"""
+    for pat in patterns:
+        if pat in text_lower:
+            return True
+    return False
+
+
+# 跨函数状态写读（漏报面 J 类）—— 赋值目标解析：
+#   this.buf = p / self.buf = p   → 实例字段（按类收敛，key "this"）
+#   Holder.gbuf = p               → 类限定静态字段（key = 字段名 / 类名）
+#   gbuf = p / box = []           → 裸字段/模块全局（key = 名字）
+# 只有名字落在 state_slots（collect_state_slots 收拢的字段/全局声明）里才算
+# 状态写，避免把不同函数的同名局部变量跨函数串起来。
+_THIS_FIELD_RE = re.compile(r"^(?:this|self)\.(\w+)\s*[+\-*/%]?=")
+_CLASS_FIELD_RE = re.compile(r"^([A-Z][A-Za-z0-9_]*)\.(\w+)\s*[+\-*/%]?=")
+_BARE_STATE_ASSIGN_RE = re.compile(r"^(\w+)\s*[+\-*/%]?=")
 
 
 # ─── CPG Graph Builder ───────────────────────────────────────────────────────
@@ -312,13 +350,15 @@ class CPGGraphBuilder:
         self._taint_loader = taint_loader
         self._indexed_files: set[str] = set()
         self._cache_dir: Path | None = None
+        # 跨函数状态槽（类字段 / 模块全局名），_add_state_bridge 建图末期填充
+        self._state_slots: set[str] = set()
 
     # ── Cache helpers ────────────────────────────────────────────────────
 
     # BUG 33: 图节点属性一旦变更（如给 call_site 补 enclosing_function），
     # 旧缓存文件仍是按目录路径哈希命名的，直接复用会拿到过时属性。
     # 版本号混入哈希 → 变更属性后自动换新缓存文件。
-    _CACHE_VERSION = "v3"  # v3: P1-3 跨函数边加 confidence 属性
+    _CACHE_VERSION = "v4"  # v4: 跨函数状态桥接（漏报面 J 类）
 
     @staticmethod
     def _cache_path_for(directory: Path) -> Path:
@@ -578,7 +618,7 @@ class CPGGraphBuilder:
             # `sb.append(payload); s = sb.toString();` — the write call's taint
             # must reach the host variable's var-refs so the read side reuses
             # the existing RHS→LHS / var_ref→call_site bridges.
-            self._add_container_state_edges(path)
+            self._add_container_state_edges(path, language)
 
         # 4.55 — Connect NODE_PARAMETER → NODE_ASSIGNMENT for the same
         # (enclosing_function, var_name).  Phase 1.5 of build_def_use_chains
@@ -682,6 +722,20 @@ class CPGGraphBuilder:
         # Build cross-file call edges
         cross_edges = self._call_graph_builder.build_calls()
 
+        # 收集跨函数状态槽（类字段 / 模块全局名）—— 供 _add_state_bridge 使用。
+        # 需要先看完全部文件再连边，故在 add_file 循环前单独解析一遍。
+        self._state_slots = set()
+        for file_path in self._call_graph_builder.files:
+            lang = detect_by_extension(file_path)
+            if lang not in self._parser.providers:
+                continue
+            try:
+                tree = self._parser.parse_file(file_path)
+            except (OSError, ValueError, FileNotFoundError):
+                continue
+            provider = self._parser.get_provider(lang)
+            self._state_slots |= provider.collect_state_slots(tree)
+
         # Add each file's local information to the graph
         import contextlib
 
@@ -732,6 +786,10 @@ class CPGGraphBuilder:
         # This is an over-approximation (all args → all params) but
         # guarantees no real taint flow is missed.
         self._add_cross_function_edges()
+
+        # 5b — 跨函数状态桥接（漏报面 J 类）：全局/静态/实例字段一处写、
+        # 另一处读。必须在全部文件入图后全图执行。
+        self._add_state_bridge()
 
         # ── Save to cache ──────────────────────────────────────────────
         if use_cache:
@@ -1107,7 +1165,7 @@ class CPGGraphBuilder:
                 if _word_in_text(vname, expr):
                     self.graph.add_edge(nid, csid, edge_type=EDGE_DATA_FLOW)
 
-    def _add_container_state_edges(self, file_path: str) -> None:
+    def _add_container_state_edges(self, file_path: str, language: str) -> None:
         """容器/Builder 状态写读桥接（漏报面 A 类 / TODO P2 首项）。
 
         ``sb.append(payload); String s = sb.toString();`` 这种「把污点写进
@@ -1128,6 +1186,20 @@ class CPGGraphBuilder:
         ``extract_assignment_target`` 归一化到宿主名处理。
         """
         # 1 — 收集本文件「内部状态写」调用点：(enclosing_function, host) → [call_site]
+        #
+        # BUG 42 (误报面 K 类联动): 容器写跳过命中 sanitizer 的调用点。
+        # ``ps.setString(1, q)`` 是 sql_injection 的 sanitizer（安全参数绑定），
+        # 若仍按 setXxx 启发式把污点写进宿主 ``ps``，下游 ``ps.executeQuery()``
+        # 读状态会被误报成 sql_injection（demo 安全样例 ⑤ 即此）。命中任何类别
+        # sanitizer 的调用都是绑定/加固类 API，参数污点不应经它流入宿主 ——
+        # 否则会在真实漏报之外再造一批假阳性。前提（缺陷平衡铁律）：被跳过者
+        # 均为安全 API，不涉及真实 taint 通道（setAttribute/put/add 等不在
+        # sanitizer 列表里，不受影响）。
+        sanitizers: set[str] = set()
+        if self._taint_loader is not None:
+            for pat in _all_sanitizer_patterns(self._taint_loader, language):
+                sanitizers.add(pat)
+
         writes: dict[tuple[str, str], list[str]] = {}
         for nid, data in self.graph.nodes(data=True):
             if data.get("node_type") != NODE_CALL_SITE:
@@ -1137,6 +1209,8 @@ class CPGGraphBuilder:
             expr = data.get("expression", "")
             m = _HOST_METHOD_RE.match(expr)
             if m is None or not _is_container_write(m.group("meth")):
+                continue
+            if sanitizers and _matches_any(expr.lower(), sanitizers):
                 continue
             key = (data.get("enclosing_function", ""), m.group("host"))
             writes.setdefault(key, []).append(nid)
@@ -1162,6 +1236,168 @@ class CPGGraphBuilder:
             for csid in cs_ids:
                 for vid in vids:
                     self.graph.add_edge(csid, vid, edge_type=EDGE_DATA_FLOW)
+
+    # ── 跨函数状态桥接（漏报面 J 类）────────────────────────────────────────
+
+    def _add_state_bridge(self) -> None:
+        """跨函数状态桥接：全局/静态/实例字段一处写、另一处读。
+
+        def-use 是函数内的、容器写桥接也只在同函数生效 —— 状态（模块全局 /
+        static 字段 / ``this``/``self`` 实例字段）一旦越过函数边界就断链：
+
+        - ``gbuf = p``（端点 A）→ ``exec(gbuf)``（端点 B）
+        - ``queue.add(p)``（A）→ ``for x : queue``（B）
+        - ``this.buf = p``（A）→ ``exec(this.buf)``（B）
+
+        修法：建图末期（add_directory）先用 ``collect_state_slots`` 收拢各文件
+        声明的状态名（``self._state_slots``），这里把「状态写」节点连到「状态
+        读」节点。读侧既认 ``NODE_VARIABLE_REF``（函数内有 def 时才存在），
+        也认按词边界引用状态名的 ``call_site`` / ``assignment`` —— 模块全局 /
+        静态字段在函数内通常没有 def，不会生成 var_ref 节点，必须靠表达式文本
+        兜底。``this``/``self`` 实例状态按类收敛，避免跨类串扰。
+        """
+        slots = self._state_slots
+        if not slots:
+            return
+        graph = self.graph
+
+        # func → class 索引（this/self 实例状态按类匹配）
+        func_class: dict[tuple[str, str], str] = {}
+        for _nid, data in graph.nodes(data=True):
+            if data.get("node_type") != NODE_FUNCTION:
+                continue
+            cls = data.get("class_name")
+            if cls:
+                func_class[(data.get("file_path", ""), data.get("name", ""))] = cls
+
+        # 状态名 → 正则（一次构建，逐节点匹配文本引用）
+        slot_names = sorted(set(slots) | {"this", "self"})
+        slots_re = re.compile(
+            r"(?<![A-Za-z0-9_$])("
+            + "|".join(re.escape(n) for n in slot_names)
+            + r")(?![A-Za-z0-9_$])"
+        )
+
+        # ── 状态写节点：key → [(node_id, scope)]；scope 供 this/self 类匹配 ──
+        writes: dict[str, list[tuple[str, str | None]]] = {}
+        # ── 状态读节点 ──
+        reads: dict[str, list[tuple[str, str | None]]] = {}
+
+        for nid, data in graph.nodes(data=True):
+            ntype = data.get("node_type")
+            if ntype == NODE_ASSIGNMENT:
+                for key, scope in self._assignment_state_keys(data, slots, func_class):
+                    writes.setdefault(key, []).append((nid, scope))
+            elif ntype == NODE_CALL_SITE:
+                for key, scope in self._callsite_state_keys(data, slots):
+                    writes.setdefault(key, []).append((nid, scope))
+
+            if ntype in (NODE_CALL_SITE, NODE_ASSIGNMENT):
+                for key, scope in self._text_state_keys(data, slots_re, func_class):
+                    reads.setdefault(key, []).append((nid, scope))
+            elif ntype == NODE_VARIABLE_REF:
+                for key, scope in self._varref_state_keys(data, slots, func_class):
+                    reads.setdefault(key, []).append((nid, scope))
+
+        if not writes:
+            return
+
+        # ── 连接（全图，含同函数 —— MultiDiGraph 重复边无害）──
+        for key, w_entries in writes.items():
+            for wid, wscope in w_entries:
+                for rid, rscope in reads.get(key, []):
+                    if rid == wid:
+                        continue
+                    if wscope is not None and rscope is not None and wscope != rscope:
+                        continue  # this/self 只连同类
+                    graph.add_edge(wid, rid, edge_type=EDGE_DATA_FLOW)
+
+    def _assignment_state_keys(
+        self,
+        data: dict,
+        slots: set[str],
+        func_class: dict[tuple[str, str], str],
+    ) -> list[tuple[str, str | None]]:
+        """赋值节点 → 状态写 key（(key, scope)）。非状态写返回空列表。"""
+        fp = data.get("file_path", "")
+        fn = data.get("enclosing_function", "")
+        src = (data.get("source") or "").strip()
+        tvar = data.get("var_name", "")
+
+        m = _THIS_FIELD_RE.match(src)
+        if m:
+            # this.buf = t / self.buf = t —— 实例字段，按类收敛到 key "this"
+            if m.group(1) in slots:
+                return [("this", func_class.get((fp, fn)))]
+            return []
+
+        m = _CLASS_FIELD_RE.match(src)
+        if m:
+            receiver, field = m.group(1), m.group(2)
+            if field in slots:
+                # 静态字段：裸名读（同类方法内）+ 类限定读（Holder.gbuf）
+                return [(field, None), (receiver, None)]
+            return []
+
+        m = _BARE_STATE_ASSIGN_RE.match(src)
+        if m and m.group(1) == tvar and tvar in slots:
+            return [(tvar, None)]
+        return []
+
+    @staticmethod
+    def _callsite_state_keys(
+        data: dict,
+        slots: set[str],
+    ) -> list[tuple[str, str | None]]:
+        """容器写调用点 → 状态写 key（宿主名是声明字段/全局时）。"""
+        expr = data.get("expression", "") or ""
+        m = _HOST_METHOD_RE.match(expr)
+        if m is not None and _is_container_write(m.group("meth")) and m.group("host") in slots:
+            return [(m.group("host"), None)]
+        return []
+
+    @staticmethod
+    def _varref_state_keys(
+        data: dict,
+        slots: set[str],
+        func_class: dict[tuple[str, str], str],
+    ) -> list[tuple[str, str | None]]:
+        """var_ref → 状态读 key。this/self 按类收敛；裸名须落在 slots。"""
+        fp = data.get("file_path", "")
+        fn = data.get("enclosing_function", "")
+        vname = data.get("var_name", "")
+        if vname in ("this", "self"):
+            return [("this", func_class.get((fp, fn)))]
+        if vname in slots:
+            return [(vname, None)]
+        return []
+
+    @staticmethod
+    def _text_state_keys(
+        data: dict,
+        slots_re: re.Pattern,
+        func_class: dict[tuple[str, str], str],
+    ) -> list[tuple[str, str | None]]:
+        """call_site / assignment：表达式文本按词边界引用状态名 → 读 key。
+
+        模块全局 / 静态字段在函数内通常没有 def、不会生成 var_ref 节点，
+        必须靠表达式文本兜底（``exec(gbuf)``、``subprocess.call(box[0])``）。
+        """
+        fp = data.get("file_path", "")
+        fn = data.get("enclosing_function", "")
+        text = data.get("expression") or data.get("source") or ""
+        if not text:
+            return []
+        found = set(slots_re.findall(text))
+        if not found:
+            return []
+        keys: list[tuple[str, str | None]] = []
+        for name in found:
+            if name in ("this", "self"):
+                keys.append(("this", func_class.get((fp, fn))))
+            else:
+                keys.append((name, None))
+        return keys
 
     # ── Taint node labeling ────────────────────────────────────────────────
 

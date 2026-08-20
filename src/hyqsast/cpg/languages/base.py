@@ -279,6 +279,18 @@ class LanguageProvider(ABC):
             issues.append(f"{type(self).__name__}.statement_types must be a non-empty set")
         return issues
 
+    # ── State slots（跨函数状态桥接，漏报面 J 类）──────────────────────────
+
+    def collect_state_slots(self, tree: Tree) -> set[str]:
+        """收集本文件声明的「状态槽」名（字段 / 模块全局）。
+
+        跨函数状态桥接（graph.py::_add_state_bridge）需要知道哪些名字是
+        越函数边界仍存活的状态（Java 类字段、Python 模块全局/类属性/实例
+        属性），只对这些名字做跨函数写读连边，避免把不同函数的同名局部变量
+        串起来。默认返回空集（未实现的语言不做该桥接）。
+        """
+        return set()
+
     # ── Convenience: tree-sitter Language / Parser construction ─────────
 
     def build_ts_language(self) -> Language:
