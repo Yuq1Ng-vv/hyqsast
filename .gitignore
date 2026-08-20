@@ -15,3 +15,6 @@ report.json
 
 # 本地机器相关的 Claude Code 权限配置（不入库）
 .claude/settings.local.json
+
+# 评分用的第三方 Real-Vuln Benchmark 仓库（嵌套 clone，不入库）
+examples/Real-Vuln-Benchmark/
