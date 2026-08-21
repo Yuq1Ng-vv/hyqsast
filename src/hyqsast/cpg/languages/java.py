@@ -306,11 +306,38 @@ class JavaAdapter(LanguageProvider):
 
     @staticmethod
     def _container_host(node: Node) -> str | None:
-        """从 array_access / field_access 取宿主名（内部状态写读别名）。"""
-        if node.type in ("array_access", "field_access"):
-            named = [c for c in node.children if c.is_named]
-            if named and named[0].type in ("identifier", "this"):
-                return named[0].text.decode("utf-8") if named[0].text else None
+        """从 array_access / field_access 取宿主名（内部状态写读别名）。
+
+        归一化原则（漏报面 A 类数组下标残留修复，纯增量：原有返回非 None
+        的路径逐字节不变，只把原返回 None 的嵌套形态补上宿主）：
+        - ``a[0] = t`` → ``a``（base 数组标识符，行为不变）
+        - ``m[0][0] = t`` → ``m``（递归下钻 array_access 的 object）
+        - ``this.f[0] = t`` / ``o.f[0] = t`` → ``f``（数组宿主取字段名，读侧
+          ``f[0]`` 与 ``this.f[0]`` 都含 ``f`` 的 var_ref，可配；对齐 J 类
+          collect_state_slots 的 this→field 约定）
+        - ``o.field = t`` → ``o``、``this.field = t`` → ``this``（非数组裸字段，
+          保持对象级 / this 级，行为不变）
+        """
+        via_array = node.type == "array_access"
+        cur = node
+        while cur is not None:
+            if cur.type == "array_access":
+                cur = cur.child_by_field_name("array")
+                continue
+            if cur.type == "field_access":
+                obj = cur.child_by_field_name("object")
+                field = cur.child_by_field_name("field")
+                if obj is None:
+                    break
+                if via_array and field is not None and field.type == "identifier":
+                    return field.text.decode("utf-8") if field.text else None
+                if obj.type in ("identifier", "this"):
+                    return obj.text.decode("utf-8") if obj.text else None
+                cur = obj
+                continue
+            if cur.type in ("identifier", "this"):
+                return cur.text.decode("utf-8") if cur.text else None
+            break
         return None
 
     def collect_state_slots(self, tree: Tree) -> set[str]:

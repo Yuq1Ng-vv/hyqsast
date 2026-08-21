@@ -393,11 +393,45 @@ class PythonAdapter(LanguageProvider):
         # 归一化到宿主名，让 def-use / RHS→LHS 把污点送进宿主并接到宿主
         # 后续读取（漏报面 A 类，见 graph.py::_add_container_state_edges）。
         if left.type in ("attribute", "subscript"):
-            named = [c for c in left.children if c.is_named]
-            if named and named[0].type == "identifier":
-                return named[0].text.decode("utf-8") if named[0].text else None
-            return None
+            return self._container_host(left)
 
+        return None
+
+    @staticmethod
+    def _container_host(node: Node) -> str | None:
+        """从 subscript / attribute 取宿主名（内部状态写读别名）。
+
+        归一化原则（漏报面 A 类数组下标残留修复，纯增量：原有返回非 None
+        的路径逐字节不变，只把原返回 None 的嵌套形态补上宿主）：
+        - ``a[0] = t`` → ``a``（base 标识符，行为不变）
+        - ``a[0][0] = t`` → ``a``（递归下钻 subscript 的 value）
+        - ``self.arr[0] = t`` → ``arr``（数组宿主取字段名，读侧 ``arr[0]`` 与
+          ``self.arr[0]`` 都含 ``arr`` 的 var_ref，可配；对齐 collect_state_slots
+          的 self.X→X 约定）
+        - ``obj.field = t`` → ``obj``、``self.buf = t`` → ``self``（非数组裸字段，
+          保持对象级 / self 级，行为不变）
+        """
+        via_subscript = node.type == "subscript"
+        cur = node
+        while cur is not None:
+            if cur.type == "subscript":
+                cur = cur.child_by_field_name("value")
+                continue
+            if cur.type == "attribute":
+                # tree-sitter-python 的 attribute 字段是 object / attribute
+                value = cur.child_by_field_name("object")
+                attr = cur.child_by_field_name("attribute")
+                if value is None:
+                    break
+                if via_subscript and attr is not None and attr.type == "identifier":
+                    return attr.text.decode("utf-8") if attr.text else None
+                if value.type == "identifier":
+                    return value.text.decode("utf-8") if value.text else None
+                cur = value
+                continue
+            if cur.type == "identifier":
+                return cur.text.decode("utf-8") if cur.text else None
+            break
         return None
 
     def collect_state_slots(self, tree: Tree) -> set[str]:

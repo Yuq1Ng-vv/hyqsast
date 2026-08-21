@@ -88,6 +88,15 @@ class Parser:
         # with parsed trees. Warn if it exceeds a reasonable threshold.
         self._max_lang_entries = 10_000
 
+    @property
+    def configured_languages(self) -> list[str]:
+        """已配置的语言名（排序，供图缓存 key 稳定拼接）。
+
+        同一目录换 language 扫描必须换缓存 key，否则复用错语言构建的图
+        （漏报面 G 类：标签全错）。
+        """
+        return sorted(self._providers.keys())
+
     @classmethod
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Dynamically compute SUPPORTED_LANGUAGES from the registry."""

@@ -31,6 +31,21 @@
   「对宿主内部状态写」，从写调用点连 DATA_FLOW 边到同函数内该宿主所有 var_ref，
   读侧复用 RHS→LHS / var_ref→call_site 桥接。demo ⑥ 容器与 Builder 形态
   实测接住。
+- **数组下标归一化收尾**（`languages/java.py::_container_host` +
+  `languages/python.py::_container_host`，漏报面 A 类剩余）：简单
+  `a[0] = t; sink(a[0])` 早在容器桥接提交就归一化到宿主 `a`；本批把**残留
+  嵌套形态**补上——多维 `m[0][0] = t`、字段数组 `this.f[0] = t` /
+  `self.arr[0] = t`（数组宿主取字段名，对齐 J 类 slot 约定）递归下钻归一化。
+  改动**纯增量**（原有非 None 结果逐字节不变，只把原 None 的嵌套形态补上
+  宿主），五条基准 A/B 全部零变化（demo-java 7 / vampi 64 / vfa 20 /
+  flask-xss 22 / OWASP 200 文件子集 1226）。
+- **缓存陈旧修复**（`graph.py::_compute_source_fingerprint` / `_cache_path_for`
+  + `taint_loader.py::TaintRuleLoader.fingerprint` + `parser.py::configured_languages`，
+  漏报面 G 类）：指纹由文件大小改为**内容 sha256**，缓存 key 拼入
+  **language + rules 内容指纹**，`_CACHE_VERSION` bump v4→v5。修复了实测
+  暴露的两类漏报：①改源码但字节数不变 → 旧图复用，新漏洞扫不出来；
+  ②换 language / 换规则 → 复用错图。数组下标修复后 CLI 默认缓存扫出 0
+  findings、`--no-cache` 才有 2 条，正是此缺陷的活体现场。
 - **跨函数静态/全局/实例字段状态桥接**（`graph.py::_add_state_bridge` +
   各语言 `collect_state_slots`，漏报面 J 类）：模块全局 / static 字段 /
   `this`/`self` 实例字段的跨函数写→读连通；`this`/`self` 按类收敛避免跨类
@@ -44,12 +59,28 @@
   （`ps.setString(1,q)` 不再向宿主 `ps` 传污点）。三条都以「真实执行 API 另有
   更精确 pattern 覆盖 / 本身是安全绑定 API」为前提，按缺陷平衡铁律保留其余
   裸类型名（`Query(` / `SQLiteStatement(` 等）防漏报。
+- **非污点流 pattern 型漏洞引擎**（`analyzer.py::_pattern_findings` +
+  `taint_rules.yaml` 的 `pattern_sinks` 标记 + `taint_loader.py`，2026-08-21）：
+  弱哈希 / 弱随机数 / cookie 未加 secure 这类「危险 API 使用本身」漏洞**没有
+  source 流入**，前向 BFS 永远够不到 → 此前在 OWASP 上恒 FN。新增机制：对每个
+  被标上 pattern 型类别的图节点**无条件产出 finding**（source==sink==节点，
+  edge_type=PATTERN，单步调用链），放在多类别聚合之后追加避免误合并。
+  **关键设计决策**：不用 crypto_weakness 当 pattern 型（其 sinks 含
+  `getInstance(、` `Random(` 等宽模式，会命中 SHA-256 / SecureRandom 等强算法，
+  FP 爆炸，且会被 `rules/` 的 CodeQL 适配层再放大），而是新建**精确专用类别**
+  `insecure_hash`（硬编码弱算法精确子串）/ `weak_randomness`（`java.util.Random`
+  / `Math.random` / `new Random(`，避开 `SecureRandom()` 子串碰撞）/
+  `secure_cookie`（`setSecure(false)`）标记 pattern 型；`trust_boundary`
+  （`getSession().setAttribute(` / `putValue(`）本身是污点流，保持 taint 型。
+  OWASP 全量 TPR：hash 69.0%（89/129，40 个配置驱动是固有边界）、weakrand
+  **100%**（218/218）、securecookie **100%**（36/36）、trustbound **100%**
+  （83/83），总分 89.9%（1272/1415）。五基准 A/B 全部零丢失；OWASP 200 文件
+  子集 A/B 每类别 TP ≥ before（12 条丢失全是跨方法 `@Override` 样板 FP 产物，
+  无一条真实检测）。分块扫描结果见
+  `benchmarks/owasp/results/2026-08-21-pattern/`。
 
 ## P2（想起来了就做）
 
-- **数组下标断链**（A 类剩余）：`a[0] = t; sink(a[0])` —— def 的 var_name 是
-  `a[0]`，用是 `a`，配不上。容器/Builder/字段形态已由状态桥接接住，仅数组
-  下标需把 var_name 归一化到宿主 `a`。
 - **字段敏感 / 对象属性级污点**：现在污点是「变量名级」，`obj.userInput` 和
   `obj.isAdmin` 都按变量 `obj` 传播。理想是按「敏感字段访问」传播
   （source 只进 `obj.userInput`，`obj.isAdmin` 不传播）。
@@ -159,12 +190,12 @@ setter）再从另一处读出来，链必断。写侧是表达式语句不建�
 - **max_paths=5**：前 5 条 src→sink 路径填满即停，第 6+ 条路径独有的 sink 漏。
 - **max_findings_per_category=50**：单类别截断（P0-2 只提示不补全）。
 
-### G. 缓存陈旧（⚙️ graph.py::_cache_path_for / _compute_source_fingerprint）
+### G. 缓存陈旧 —— ✅ 已修复（2026-08-21）
 
-- 指纹只有 `(相对路径, 文件大小)`：改文件但大小不变 → 复用旧图，新增漏洞扫
-  不出来（体感「漏报」）。
-- 缓存 key 不含 language / rules：同目录换 language 扫 → 复用错语言图 → 标签全错。
-- 修法：指纹加文件 mtime / 内容 hash；key 加 language + rules 集 hash。
+- 指纹改**内容 sha256**（不再只看文件大小）——同尺寸内容变化也触发重建；
+- 缓存 key 拼入 **language + rules 内容指纹**——换语言/`--rules` 不复用错图；
+- `_CACHE_VERSION` v4→v5（数组下标归一化改了结构边，旧图作废）。
+  实测：同字节 safe/vuln 配对 0→1 finding；rules 变化新建 key；不变源码正常命中。
 
 ### H. 行键控桥接对跨行语句（⚠️ graph.py::_add_rhs_to_lhs_edges）
 
@@ -202,6 +233,32 @@ BFS 旧实现**命中 sink 即终止路径**——中间节点被过宽规则误
 联动收窄（BUG 42，防误报、不增漏报）：移除裸 `.build(`（java ssrf）、
 `String(`（java sql_injection），容器写跳过 sanitizer 调用 —— 三条都以
 更精确 pattern 覆盖 / 安全绑定 API 为前提，基准 TP 零变化。
+
+### L. pattern 型类别的固有边界（⚠️ 2026-08-21 新增，记录未来 FN 面）
+
+非污点流 pattern 型类别（`insecure_hash` / `weak_randomness` / `secure_cookie`）
+对「硬编码危险 API 使用」100% 接住，但以下形态**确定性引擎接不住，是固有 FN**，
+写下来避免将来误当 bug 或误砍规则：
+
+- **算法/参数来自外部配置或变量**（`getInstance(algorithm)` ←
+  `getProperty("hashAlg1", "SHA512")`）：字符串在变量里，无法确定性判定强弱。
+  OWASP hash 40/129 FN 全部是这种（测试在运行期用 MD5 配置，静态不可见）。
+  **不要**为了抓它把 `getInstance(` 加进 pattern 型类别 —— 那会把 SHA-256/
+  SHA-384 强算法全报（FP 爆炸）。正确做法是配置侧分析（见 P2「配置类漏洞」）。
+- **`crypto_weakness` 永不可标为 pattern 型**：其 sinks 含宽模式
+  （`getInstance(、` `Random(` 等）+ `rules/` CodeQL 适配层的
+  `Cipher.getInstance(` / `MessageDigest.getInstance(`，一旦无条件产出，
+  任何强算法/强随机数使用全报。它保持 taint 型（有 source 流入才产出）。
+- **大小写敏感**：`pat in text`。`getInstance("md5"` 等小写变体已补，
+  但任意大小写混排（`"Md5"`）仍漏 —— 子串匹配的固有边界，别指望穷举。
+- **间接会话访问**：`trust_boundary` 只认 `getSession().setAttribute(` /
+  `putValue(`；`HttpSession s = req.getSession(); s.setAttribute(...)` 经变量
+  中转未覆盖（漏报面清单信任边界一条同理）。
+- **import 别名弱随机**：`new Random(` 已补（已验证不与 `new SecureRandom(`
+  / `new RandomAccess(` 碰撞）；但 `ThreadLocalRandom` / `SplittableRandom` /
+  `Random` 经包装类（`MyRand.getInstance()`）形态漏。
+- **pattern 型 vs taint 型同节点**：某节点既是 pattern 型又是 BFS 可达 sink，
+  会产出两条 finding（类别不同），聚合只对 BFS 侧生效 —— 已知重复候选，OK。
 
 ## 已知限制（与 README 原文对齐）
 

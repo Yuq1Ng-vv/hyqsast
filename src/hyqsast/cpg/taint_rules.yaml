@@ -4484,6 +4484,48 @@ java:
     - .trace(
     - .fatal(
     - .log(
+    # 信任边界（CWE-501）：未校验的请求数据写入 HttpSession —— 会话被后续
+    # 代码当作可信数据使用。精确到 getSession().setAttribute（避开
+    # request.setAttribute 之类请求级属性，不制造信任边界误报）与
+    # HttpSession 专用的 putValue。经 session 变量中转的调用（如
+    # ``HttpSession s = ...; s.setAttribute(t)``）暂未覆盖，见漏报面清单。
+    trust_boundary:
+    - getSession().setAttribute(
+    - putValue(
+    # Cookie 安全属性（CWE-614）：显式 setSecure(false) 使 cookie 可被
+    # 明文 HTTP 携带。OWASP safe 用例用 setSecure(true)，不会命中。
+    secure_cookie:
+    - setSecure(false)
+    - setSecure( false
+    # 弱哈希（CWE-328）：MessageDigest/DigestUtils 硬编码弱算法（MD5/SHA-1 及
+    # 大小写变体）。只列精确弱算法子串 —— 不列裸 getInstance(，避免命中
+    # SHA-256/384/512 等强算法造成误报。算法来自外部配置（getProperty、
+    # 变量）的形态无法确定性判定强弱，见漏报面清单 D 类（未来 FN 面）。
+    insecure_hash:
+    - MessageDigest.getInstance("MD5
+    - MessageDigest.getInstance("MD4
+    - MessageDigest.getInstance("MD2
+    - MessageDigest.getInstance("SHA1
+    - MessageDigest.getInstance("SHA-1
+    - MessageDigest.getInstance("sha1
+    - MessageDigest.getInstance("sha-1
+    - MessageDigest.getInstance("md5
+    - DigestUtils.md5(
+    - DigestUtils.md5Hex(
+    - DigestUtils.sha(
+    - DigestUtils.shaHex(
+    - DigestUtils.sha1(
+    - DigestUtils.sha1Hex(
+    # 弱随机数（CWE-330）：java.util.Random / Math.random 替代 SecureRandom。
+    # 用 ``java.util.Random`` 而不用裸 ``Random(`` —— 后者是 ``SecureRandom()``
+    # 的子串会误报；OWASP safe 用例全用 SecureRandom，不会命中。``new Random(``
+    # 覆盖 import 别名形态（``import java.util.Random; new Random()``）——
+    # 已验证不与 ``new SecureRandom(``/``new RandomAccess(`` 等强随机/无关
+    # 类碰撞（子串检查）。
+    weak_randomness:
+    - java.util.Random
+    - Math.random
+    - new Random(
   sanitizers:
     sql_injection:
     - .setString(
@@ -4647,3 +4689,22 @@ java:
     - SecureRandom.getInstanceStrong(
     - SSLContext.getInstance("TLSv1.2"
     - SSLContext.getInstance("TLSv1.3"
+
+  # pattern_sinks: 标记「非污点流 pattern 型」sink 类别 —— sink 节点没有
+  # source 流入、BFS 够不到，但类别本身代表危险 API 使用，analyzer 对每个
+  # 被标上该类别的节点无条件产出 finding。
+  #
+  # 用「精确弱 API 专用类别」而不用 crypto_weakness：内置 crypto_weakness
+  # sinks 含大量宽模式（getInstance(、Random( …），一旦标记为 pattern 型，
+  # 任何 getInstance/SecureRandom() 都会被无条件命中 → 强算法/强随机数
+  # 全报（FP 爆炸，且会被 rules/ 的 CodeQL 适配层再放大）。所以：
+  #   - insecure_hash    只列硬编码弱算法精确子串（MessageDigest 的
+  #                       "MD5"/"SHA-1" 大小写变体 + DigestUtils 弱 API）
+  #   - weak_randomness  只用 java.util.Random / Math.random（避开
+  #                       SecureRandom() 子串碰撞）
+  #   - secure_cookie    setSecure(false) 即漏洞候选
+  # crypto_weakness 保持污点流（BFS-only），由 source 流入时照常产出。
+  pattern_sinks:
+  - insecure_hash
+  - weak_randomness
+  - secure_cookie

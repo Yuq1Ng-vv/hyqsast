@@ -6,16 +6,20 @@
 
 或让 run.py 自动传入 expectedresults 路径（默认从克隆的 BenchmarkJava 读）。
 
-口径（与 OWASP 官方评分一致：每 (测试, 类别) 一对）：
+口径（与 OWASP 官方一致：每 (测试, 类别) 一对）：
 - 严格(strict)：finding 的 ``vuln_type`` == 期望类别映射的 vtype（含
   ``related_categories``），才算该测试命中。
 - 宽松(loose)：vuln_type 为 ``injection_general``（规则兜底类别）也视为命中
   —— 说明流接住了、只是类别不精确，记入 loose 列。
 - cross：在某个测试上报告了「与期望类别不一致」的 finding（其它类别，
   仅信息性，不计入该测试的 TP/FP）。
+- **TPR% = TP/(TP+FN)**（仅脆弱用例的召回率，官方真阳率）、**FPR% =
+  FP/(FP+TN)**（安全用例被误报的比例）。vuln 列 = 该类脆弱用例总数。
 
-类别映射里标 ``None`` 的是 hyqsast 规则表没有的类别（weakrand / hash /
-trustbound / securecookie）—— 这些恒为严格口径 FN，即覆盖缺口。
+类别映射见 ``CAT_MAP``：hash/weakrand 是「API 使用本身即漏洞」的 pattern 型，
+映射到精确专用类别 ``insecure_hash``/``weak_randomness``；trustbound/securecookie
+映射到 ``trust_boundary``/``secure_cookie``。``None`` 兜底保留给将来仍未映射的
+类别（规则表缺失 → 严格口径恒 FN）。
 """
 
 from __future__ import annotations
@@ -27,7 +31,13 @@ import os
 from collections import defaultdict
 from pathlib import Path
 
-# 期望类别 -> hyqsast vuln_type（None = 规则表没有对应类别 → 恒 FN，覆盖缺口）
+# 期望类别 -> hyqsast vuln_type。
+# hash / weakrand 是「危险 API 使用本身」而非污点流（无 source 流入），
+# 2026-08-21 起由精确 pattern 专用类别接管：insecure_hash（硬编码弱算法）/
+# weak_randomness（java.util.Random、Math.random），不再恒 FN；crypto 仍走
+# crypto_weakness（污点流，弱加密 API 由 source 流入时产出）。
+# trustbound / securecookie 映射到 trust_boundary / secure_cookie。
+# ``None`` 兜底保留给将来仍未映射的类别（规则表缺失 → 严格口径恒 FN）。
 CAT_MAP = {
     "pathtraver": "path_traversal",
     "sqli": "sql_injection",
@@ -36,10 +46,10 @@ CAT_MAP = {
     "ldapi": "ldap_injection",
     "xpathi": "xpath_injection",
     "crypto": "crypto_weakness",
-    "hash": None,  # 缺 insecure_hash 规则（覆盖缺口，见 README）
-    "weakrand": None,  # 缺 weak_randomness 规则
-    "trustbound": None,  # 缺 trust_boundary 规则
-    "securecookie": None,  # 缺 secure_cookie 规则
+    "hash": "insecure_hash",
+    "weakrand": "weak_randomness",
+    "trustbound": "trust_boundary",
+    "securecookie": "secure_cookie",
 }
 
 DEFAULT_EXPECTED = "/root/benchmarks/owasp-benchmark/expectedresults-1.2.csv"
@@ -88,14 +98,21 @@ def main() -> None:
     expected = _load_expected(args.expected)
     by_test, n_findings = _findings_by_test(args.report)
 
+    # 官方 OWASP 口径：TPR = TP/(TP+FN)（仅脆弱用例），FPR = FP/(FP+TN)
+    # （仅安全用例）。旧版 recall% 曾用 TP/全部用例，会被大量 safe 用例稀释，
+    # 与官方口径不符，改为 TPR%/FPR% 双列。
     stats: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"expected": 0, "TP": 0, "FN": 0, "FP": 0, "TN": 0, "loose": 0, "cross": 0}
+        lambda: {
+            "expected": 0, "vuln": 0, "TP": 0, "FN": 0, "FP": 0, "TN": 0,
+            "loose": 0, "cross": 0,
+        }
     )
 
     for test, cat, is_vuln, _cwe in expected:
         vtype = CAT_MAP.get(cat)
         s = stats[cat]
         s["expected"] += 1
+        s["vuln"] += 1 if is_vuln else 0
         flist = by_test.get(test, [])
         if vtype is None:
             # 规则表无此类别：严格必然 FN；报告了 injection_general 记 loose
@@ -120,24 +137,25 @@ def main() -> None:
                 s["TN"] += 1
 
     print(
-        f"{'category':<13}{'expect':>6}{'TP':>5}{'FN':>5}{'loose':>5}{'FP':>5}{'TN':>5}{'recall%':>8}{'loose%':>8}{'cross':>6}"
+        f"{'category':<13}{'expect':>6}{'vuln':>5}{'TP':>5}{'FN':>5}{'FP':>5}{'TN':>5}{'TPR%':>7}{'FPR%':>7}{'loose':>5}{'cross':>6}"
     )
     tot: dict[str, int] = defaultdict(int)
     for cat in sorted(stats):
         s = stats[cat]
-        exp = s["expected"]
-        recall = s["TP"] / exp * 100 if exp else 0
-        lrecall = (s["TP"] + s["loose"]) / exp * 100 if exp else 0
-        for k in ("expected", "TP", "FN", "loose", "FP", "TN", "cross"):
+        exp_vuln = s["TP"] + s["FN"]
+        exp_safe = s["FP"] + s["TN"]
+        tpr = s["TP"] / exp_vuln * 100 if exp_vuln else 0
+        fpr = s["FP"] / exp_safe * 100 if exp_safe else 0
+        for k in ("expected", "vuln", "TP", "FN", "FP", "TN", "loose", "cross"):
             tot[k] += s[k]
         print(
-            f"{cat:<13}{exp:>6}{s['TP']:>5}{s['FN']:>5}{s['loose']:>5}{s['FP']:>5}{s['TN']:>5}{recall:>8.1f}{lrecall:>8.1f}{s['cross']:>6}"
+            f"{cat:<13}{s['expected']:>6}{s['vuln']:>5}{s['TP']:>5}{s['FN']:>5}{s['FP']:>5}{s['TN']:>5}{tpr:>7.1f}{fpr:>7.1f}{s['loose']:>5}{s['cross']:>6}"
         )
-    print("-" * 66)
-    recall = tot["TP"] / tot["expected"] * 100 if tot["expected"] else 0
-    lrecall = (tot["TP"] + tot["loose"]) / tot["expected"] * 100 if tot["expected"] else 0
+    print("-" * 70)
+    tpr = tot["TP"] / (tot["TP"] + tot["FN"]) * 100 if (tot["TP"] + tot["FN"]) else 0
+    fpr = tot["FP"] / (tot["FP"] + tot["TN"]) * 100 if (tot["FP"] + tot["TN"]) else 0
     print(
-        f"{'TOTAL':<13}{tot['expected']:>6}{tot['TP']:>5}{tot['FN']:>5}{tot['loose']:>5}{tot['FP']:>5}{tot['TN']:>5}{recall:>8.1f}{lrecall:>8.1f}{tot['cross']:>6}"
+        f"{'TOTAL':<13}{tot['expected']:>6}{tot['vuln']:>5}{tot['TP']:>5}{tot['FN']:>5}{tot['FP']:>5}{tot['TN']:>5}{tpr:>7.1f}{fpr:>7.1f}{tot['loose']:>5}{tot['cross']:>6}"
     )
     print(f"\nfindings 总数 = {n_findings}，覆盖测试文件 = {len(by_test)}")
 

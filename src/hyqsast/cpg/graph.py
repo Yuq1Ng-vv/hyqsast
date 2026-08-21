@@ -358,16 +358,25 @@ class CPGGraphBuilder:
     # BUG 33: 图节点属性一旦变更（如给 call_site 补 enclosing_function），
     # 旧缓存文件仍是按目录路径哈希命名的，直接复用会拿到过时属性。
     # 版本号混入哈希 → 变更属性后自动换新缓存文件。
-    _CACHE_VERSION = "v4"  # v4: 跨函数状态桥接（漏报面 J 类）
+    # BUG 44 (漏报面 G 类): 缓存 key 只含目录路径 → 同一目录换 language /
+    # 换 rules 时复用错语言/错规则构建的旧图，或改引擎代码（def-use /
+    # 容器桥接等结构边）后旧图照常复用，新修复扫不出来。修法：key 拼入
+    # language + rules 内容指纹；指纹改用文件内容 hash（不再只看文件大小，
+    # 同尺寸内容变化不再静默复用旧图）。
+    _CACHE_VERSION = "v5"  # v5: 数组下标嵌套归一化 + 缓存 key 含 language/rules（G 类）
 
     @staticmethod
-    def _cache_path_for(directory: Path) -> Path:
-        """Return the cache file path for *directory*."""
+    def _cache_path_for(directory: Path, language: str = "", rules_fp: str = "") -> Path:
+        """Return the cache file path for *directory*.
+
+        Key = version + 目录绝对路径 + 语言 + 规则集指纹。任一项变化即
+        换缓存文件，杜绝「换 language/rules 复用错图」与「改代码吃旧图」。
+        """
         cache_root = Path.home() / ".cache" / "hyqsast" / "cpg"
         cache_root.mkdir(parents=True, exist_ok=True)
         # Use a hash of the absolute path so cache is stable across cwd changes
         dir_hash = hashlib.sha256(
-            f"{CPGGraphBuilder._CACHE_VERSION}:{directory.resolve()}".encode()
+            f"{CPGGraphBuilder._CACHE_VERSION}:{directory.resolve()}:{language}:{rules_fp}".encode()
         ).hexdigest()[:16]
         return cache_root / f"{dir_hash}.pkl"
 
@@ -375,8 +384,9 @@ class CPGGraphBuilder:
     def _compute_source_fingerprint(directory: Path) -> str:
         """Compute a fingerprint of all source files under *directory*.
 
-        Uses (relative_path, file_size) tuples so the cache invalidates
-        when files are added, removed, or changed in size.
+        用 (相对路径, 内容 sha256) 逐文件 hash —— 同一路径、同尺寸但内容
+        变化也会导致指纹不同，缓存必然失效重建（漏报面 G 类：改文件但
+        大小不变时旧图复用 = 新增漏洞扫不出来）。
         """
         from hyqsast.cpg.languages import detect_by_extension
 
@@ -388,7 +398,12 @@ class CPGGraphBuilder:
                 continue
             if detect_by_extension(str(entry)) is not None:
                 rel = entry.relative_to(directory)
-                entries.append(f"{rel}:{entry.stat().st_size}")
+                try:
+                    with entry.open("rb") as fh:
+                        content_hash = hashlib.sha256(fh.read()).hexdigest()
+                except OSError:
+                    continue
+                entries.append(f"{rel}:{content_hash}")
         return hashlib.sha256("\n".join(entries).encode()).hexdigest()
 
     # ── File indexing ───────────────────────────────────────────────────
@@ -678,7 +693,11 @@ class CPGGraphBuilder:
         from hyqsast.cpg.languages import detect_by_extension
 
         root = Path(dir_path).resolve()
-        cache_path = self._cache_path_for(root)
+        # 漏报面 G 类：缓存 key 拼入 language + rules 指纹 —— 换语言/换规则
+        # 不得复用旧图；改引擎结构边（def-use/容器桥接）靠 bump 版本号。
+        cache_lang = ",".join(self._parser.configured_languages)
+        cache_rules = self._taint_loader.fingerprint() if self._taint_loader is not None else ""
+        cache_path = self._cache_path_for(root, cache_lang, cache_rules)
 
         # ── Try cache ──────────────────────────────────────────────────
         if use_cache and cache_path.exists():

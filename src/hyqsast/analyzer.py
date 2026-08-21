@@ -204,53 +204,138 @@ class Analyzer:
         graph = self.graph_builder.graph
         source_ids = sorted(n for n, d in graph.nodes(data=True) if d.get("taint_source"))
         sink_set = {n for n, d in graph.nodes(data=True) if d.get("taint_sink")}
-        if not source_ids or not sink_set:
-            return []
-
         findings: list[Finding] = []
         seen: set[tuple[str, str, str, str]] = set()
         per_category: dict[str, int] = defaultdict(int)
         # P0-2: 记录每个类别因上限被跳过的候选数（供截断可见化）
         skipped: dict[str, int] = defaultdict(int)
 
-        for src in source_ids:
-            if per_category and all(
-                c >= self.max_findings_per_category for c in per_category.values()
-            ):
-                break
-            for node_ids, edge_types in self._bfs_to_sink(src, sink_set):
-                for cat in self._sink_categories(node_ids[-1]):
-                    if per_category.get(cat, 0) >= self.max_findings_per_category:
-                        skipped[cat] += 1
-                        continue
-                    # P1-4: 字符串模板型注入的位置门控 —— 污点在参数绑定位
-                    # （如 ``query(sql, tainted_params)`` 的第二个实参）不算
-                    # 语句注入命中；确定不了位置时放行，保持高召回。
-                    if cat in _SINK_STR_TEMPLATE_CATS:
-                        taint_pos = self._tainted_arg_position(node_ids)
-                        if taint_pos is not None and taint_pos >= 1:
+        if source_ids and sink_set:
+            for src in source_ids:
+                if per_category and all(
+                    c >= self.max_findings_per_category for c in per_category.values()
+                ):
+                    break
+                for node_ids, edge_types in self._bfs_to_sink(src, sink_set):
+                    for cat in self._sink_categories(node_ids[-1]):
+                        if per_category.get(cat, 0) >= self.max_findings_per_category:
+                            skipped[cat] += 1
                             continue
-                    finding = self._ids_to_finding(node_ids, edge_types, cat)
-                    if finding is None:
-                        continue
-                    key = (
-                        cat,
-                        finding.source.file_path,
-                        finding.source.line,
-                        finding.sink.file_path,
-                        finding.sink.line,
-                    )
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    per_category[cat] += 1
-                    findings.append(finding)
-
-        # P0-2: 把截断计数暴露给汇总层；0 的类别不保留
-        self._truncated_categories = {k: v for k, v in skipped.items() if v > 0}
+                        # P1-4: 字符串模板型注入的位置门控 —— 污点在参数绑定位
+                        # （如 ``query(sql, tainted_params)`` 的第二个实参）不算
+                        # 语句注入命中；确定不了位置时放行，保持高召回。
+                        if cat in _SINK_STR_TEMPLATE_CATS:
+                            taint_pos = self._tainted_arg_position(node_ids)
+                            if taint_pos is not None and taint_pos >= 1:
+                                continue
+                        finding = self._ids_to_finding(node_ids, edge_types, cat)
+                        if finding is None:
+                            continue
+                        key = (
+                            cat,
+                            finding.source.file_path,
+                            finding.source.line,
+                            finding.sink.file_path,
+                            finding.sink.line,
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        per_category[cat] += 1
+                        findings.append(finding)
 
         # P1-5: 相同 (src,sink) 的多类别候选合并为一条主 finding
-        return self._aggregate_multi_category(findings)
+        findings = self._aggregate_multi_category(findings)
+
+        # 非污点流 pattern 型漏洞（taint_rules.yaml 的 ``pattern_sinks`` 标记，
+        # 如 crypto_weakness / secure_cookie）：sink 节点没有 source 流入，BFS
+        # 永远够不到；类别本身代表危险 API 使用，对每个被标上该类别的节点
+        # 无条件产出 finding（source==sink==该节点）。放在聚合之后追加，避免
+        # 与 BFS finding 的 (src,sink) 位置碰撞被误合并。
+        pattern_findings, pattern_skipped = self._pattern_findings()
+        if pattern_skipped:
+            self._truncated_categories = dict(pattern_skipped)
+        findings.extend(pattern_findings)
+
+        # P0-2: 把截断计数暴露给汇总层；0 的类别不保留
+        if skipped:
+            for cat, n in skipped.items():
+                self._truncated_categories[cat] = self._truncated_categories.get(cat, 0) + n
+        self._truncated_categories = {
+            k: v for k, v in self._truncated_categories.items() if v > 0
+        }
+        return findings
+
+    def _pattern_findings(self) -> tuple[list[Finding], dict[str, int]]:
+        """非污点流 pattern 型漏洞的 finding + 截断计数。
+
+        这类类别（``taint_rules.yaml`` 的 ``pattern_sinks`` 标记）的 sink 节点
+        没有 source 流入，前向 BFS 永远够不到 —— 但它们代表「危险 API 使用
+        本身」（弱随机数 / 弱哈希 / cookie 未加 secure 等），与是否有用户
+        输入流入无关。规则：对被标上该类别的每个节点无条件产出 finding，
+        ``source==sink==该节点``（调用链单步，edge_type=PATTERN），召回优先。
+
+        放在 :meth:`_aggregate_multi_category` 之后追加，避免 pattern finding
+        的 (src,sink) 位置与 BFS finding 的 sink 位置碰撞被误合并。
+        """
+        pattern_cats = self.taint_loader.pattern_categories(self.language)
+        if not pattern_cats:
+            return [], {}
+        graph = self.graph_builder.graph
+        out: list[Finding] = []
+        per_category: dict[str, int] = defaultdict(int)
+        skipped: dict[str, int] = defaultdict(int)
+        for nid in sorted(graph.nodes):
+            data = graph.nodes[nid]
+            sink_cats = (data.get("taint_sink") or "").split(",")
+            hits = [c for c in sink_cats if c in pattern_cats]
+            if not hits:
+                continue
+            for cat in hits:
+                if per_category[cat] >= self.max_findings_per_category:
+                    skipped[cat] += 1
+                    continue
+                finding = self._pattern_node_to_finding(nid, cat)
+                if finding is None:
+                    continue
+                per_category[cat] += 1
+                out.append(finding)
+        out.sort(key=lambda f: (f.vuln_type, f.sink.file_path, f.sink.line))
+        return out, skipped
+
+    def _pattern_node_to_finding(self, node_id: str, cat: str) -> Finding | None:
+        """从被标上 pattern 型类别的图节点构建 Finding（source==sink==节点）。"""
+        data = self._node_data(node_id)
+        if not data:
+            return None
+        file_path, line, function, code = self._node_fields(data)
+        if not (file_path and line):
+            return None
+        ref = NodeRef(
+            file_path=file_path,
+            line=line,
+            function=function,
+            code=code,
+            category=cat,
+        )
+        severity = self.severity_overrides.get(cat) or severity_for(cat)
+        return Finding(
+            id=f"{cat}-{file_path}:{line}",
+            vuln_type=cat,
+            severity=severity,
+            source=ref,
+            sink=ref,
+            call_chain=[
+                ChainStep(
+                    file_path=file_path,
+                    line=line,
+                    function=function,
+                    code=code,
+                    kind=data.get("node_type", ""),
+                    edge_type="PATTERN",
+                )
+            ],
+        )
 
     def _aggregate_multi_category(self, findings: list[Finding]) -> list[Finding]:
         """P1-5: 把相同 (source, sink) 的多类别 finding 合并为一条主 finding。

@@ -6,6 +6,7 @@ sink / sanitizer patterns grouped by language and vulnerability category.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 # php/go 目前引擎（parser/languages 适配器）尚未实现，规则已备好待用；
 # 加入白名单避免加载 rules/ 备用规则时报未知语言告警。
 _VALID_LANGUAGES = {"python", "javascript", "java", "php", "go"}
-_VALID_SECTIONS = {"sources", "sinks", "sanitizers", "sink_excludes"}
+_VALID_SECTIONS = {"sources", "sinks", "sanitizers", "sink_excludes", "pattern_sinks"}
 
 
 @dataclass
@@ -67,6 +68,10 @@ class TaintRuleLoader:
             rules_paths = [builtin, *extra]
         self._paths = self._resolve_paths(rules_paths)
         self._data: dict = {}
+        # 非污点流 pattern 型类别（按语言）：sink 节点没有 source 流入，
+        # BFS 够不到；这些类别代表「危险 API 使用本身」，analyzer 对每个
+        # 被标上该类别的节点无条件产出 finding。见 ``pattern_sinks`` 节。
+        self._pattern_categories: dict[str, set[str]] = {}
         self._load()
 
     @staticmethod
@@ -98,6 +103,22 @@ class TaintRuleLoader:
                 logger.warning("规则文件顶层应为 dict，忽略: %s", path)
         self._validate()
 
+    def fingerprint(self) -> str:
+        """规则集内容指纹：对全部规则文件（内置 + 额外）做内容 hash。
+
+        供 CPG 图缓存 key 使用 —— 换规则（含增删模式）必须换缓存，
+        否则复用旧图的结构边（如容器写跳过 sanitizer 的判定，漏报面 G 类）。
+        """
+        h = hashlib.sha256()
+        for path in self._paths:
+            try:
+                with open(path, "rb") as fh:
+                    h.update(path.as_posix().encode())
+                    h.update(fh.read())
+            except OSError:
+                continue
+        return h.hexdigest()
+
     def _merge(self, chunk: dict) -> None:
         """把一份 YAML 合并进全局规则：同类别模式追加 + 去重。"""
         for lang, lang_data in chunk.items():
@@ -122,6 +143,16 @@ class TaintRuleLoader:
                 for pat in excludes:
                     if pat not in merged:
                         merged.append(pat)
+            # pattern_sinks: 标记哪些 sink 类别是「非污点流 pattern 型」。
+            # 模式本体仍写在 sinks 里（sink 匹配照常），此处只记录类别名；
+            # analyzer 据此对这些类别无条件产出 finding（见 analyzer.py
+            # ``_pattern_findings``）。
+            pats = lang_data.get("pattern_sinks")
+            if isinstance(pats, list):
+                flag = self._pattern_categories.setdefault(lang, set())
+                for cat in pats:
+                    if isinstance(cat, str):
+                        flag.add(cat)
 
     def _validate(self) -> None:
         """Check YAML structure and warn about issues."""
@@ -154,6 +185,16 @@ class TaintRuleLoader:
                         lang,
                         sorted(_VALID_SECTIONS),
                     )
+
+                if section == "pattern_sinks":
+                    if not isinstance(lang_data[section], list) or not all(
+                        isinstance(x, str) for x in lang_data[section]
+                    ):
+                        logger.warning(
+                            "%s.pattern_sinks 应为类别名字符串列表（标记 pattern 型 sink 类别）",
+                            lang,
+                        )
+                    continue
 
                 section_data = lang_data.get(section, {})
                 if isinstance(section_data, dict):
@@ -221,6 +262,16 @@ class TaintRuleLoader:
         lang_data = self._data.get(language, {})
         excludes = lang_data.get("sink_excludes", [])
         return list(excludes) if isinstance(excludes, list) else []
+
+    def pattern_categories(self, language: str) -> set[str]:
+        """返回 *language* 的「非污点流 pattern 型」sink 类别集合。
+
+        这类类别（``pattern_sinks`` 标记）的 sink 节点没有 source 流入 ——
+        前向 BFS 永远够不到。它们代表「危险 API 使用本身」（弱随机数 / 弱哈希 /
+        cookie 未加 secure 等），analyzer 对每个被标上该类别的节点无条件产出
+        finding（见 analyzer.py::_pattern_findings）。
+        """
+        return set(self._pattern_categories.get(language, set()))
 
     def match_source(self, language: str, text: str) -> str | None:
         """Return the most specific category matching *text*, else None.

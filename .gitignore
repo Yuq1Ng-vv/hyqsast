@@ -18,3 +18,6 @@ report.json
 
 # 评分用的第三方 Real-Vuln Benchmark 仓库（嵌套 clone，不入库）
 examples/Real-Vuln-Benchmark/
+
+# OWASP 分块扫描产物（65MB+ JSON 报告，可经 benchmarks/owasp/ 重新生成）
+benchmarks/owasp/results/
