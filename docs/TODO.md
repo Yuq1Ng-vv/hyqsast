@@ -1,7 +1,7 @@
 # HyqSast 优化路线图（TODO）
 
 > 按「什么时候想起来了什么时候做」的记录。已完成项也列出，避免重复评估。
-> 条目带估算优先级（P0/P1/P2/P3）与动机；P0/P1 已全部落地（见下文「已完成」）。
+> 条目带估算优先级（P0/P1/P2/P3）与动机；P0/P1/P2(sqli) 已落地（见下文「已完成」）。
 
 ## 已完成（P0/P1，2026-08）
 
@@ -96,6 +96,26 @@
   反射返回值过近似，非规则误匹配，与 trustbound/xss FPR 100% 同类）。逐例溯源 +
   FP 代价见 `docs/OWASP漏报清单.md`（§0.6、§2.1）；修复后结果
   `owasp-after-fqn.json`。残余 FN 103 = 可修 59 / 固有 44。
+- **sqli 多行桥接 + BFS 非单调修复**（P2，`graph.py` / `dataflow.py` /
+  `callgraph_builder.py` / `analyzer.py`，BUG 46/47/48）：sqli 10 条 FN 根因实证为
+  图桥接层两处多行断链 + 一处 BFS 非单调——
+  ① **BUG 46 调用侧多行实参**：`prepareStatement(sql, …)` 实参落换行后，
+  var_ref→call_site 按精确行号匹配断链；改为用 `call_node.end_point` 按
+  `[start_line, end_line]` 区间匹配。
+  ② **BUG 48 赋值侧多行 RHS→LHS**：`String sql =\n "…'+bar+'"` 的 `bar` 与定义行
+  不同行，RHS→LHS 边键 `{file}:{line}` 命不中；`DefUsePair` 增 `def_end_line`，
+  赋值节点存 `end_line`，按 `[起始行, 结束行]` 区间匹配 + `_word_in_text` 精度闸
+  防共享行过连接（vampi 由 range-only 的 167 回落到 102）。
+  ③ **BUG 47 BFS 非单调**：全局 `max_paths=5` sink 达预算 + visited 首次胜出，先达
+  sink 饿死后达 sink（且位置 ≥1 路径抢注后位置 0 路径不再重记 → 位置门控误挡）；
+  改为**按 sink 独立预算** + visited 恰是 sink 时允许另一进入边重记。
+  效果：sqli TPR 96.3%→**100%**（FN 10→0，00100/102/103/109/997/998/1000/1006/
+  1007/1882），顺带恢复 pathtraver 5 + xpathi 1（同受 BUG 47 饿死），TOTAL TPR
+  **95.3%→96.5%**（FN 66→50），其余 8 类 + demo-java + vfa/flask-xss/vampi/python
+  基准零丢失。代价：安全用例新标 29（sqli 4 / pathtraver 2 / xpathi 2 / crypto
+  21，FPR 四类升 1.7–18.1 个百分点），流可达性过近似，分支敏感列入 P3。逐例溯源
+  + FP 代价见 `docs/OWASP漏报清单.md` §4；结果存档
+  `benchmarks/owasp/results/2026-08-21-sqli-final/`。
 
 ## P2（想起来了就做）
 

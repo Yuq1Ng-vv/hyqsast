@@ -79,6 +79,11 @@ class DefUsePair:
         def_location: Human-readable location of the definition (``"file.py:42"``).
         def_expression: Source code of the definition statement.
         use_locations: All use-site locations sorted by line number.
+        def_end_line: 1-indexed line where the definition statement ends
+            (tree-sitter ``end_point``).  Differs from *def_location* for
+            multi-line definitions (``String sql =\\n "..." + bar + "'";``),
+            whose RHS var-refs sit on later lines — the RHS→LHS bridge needs
+            this span to reach them (BUG 48).
 
     """
 
@@ -86,6 +91,7 @@ class DefUsePair:
     def_location: str
     def_expression: str = ""
     use_locations: list[str] = field(default_factory=list)
+    def_end_line: int | None = None
 
 
 @dataclass

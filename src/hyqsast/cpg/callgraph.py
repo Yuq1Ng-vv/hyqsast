@@ -32,6 +32,11 @@ class CallEdge:
         callee: Bare name of the called function (e.g. ``"execute"`` from
                 ``self.db.execute(sql)``).
         call_line: 1-indexed line number of the call site.
+        call_end_line: 1-indexed line where the call expression ends (closing
+                       paren).  Differs from *call_line* for multi-line calls,
+                       whose argument var-refs sit on later lines — the
+                       var_ref→call_site bridge needs this span to reach them
+                       (BUG 46: multi-line call argument bridging).
         full_expression: Full text of the call expression
                          (e.g. ``"self.db.execute(sql)"``).
         is_resolved: True if *callee* matches a function defined in the same file.
@@ -45,6 +50,7 @@ class CallEdge:
     callee: str
     call_line: int
     full_expression: str
+    call_end_line: int | None = None
     is_resolved: bool = False
     is_method_call: bool = False
     file_path: str = ""
@@ -63,6 +69,7 @@ class UnresolvedCall:
     caller: str
     is_method_call: bool
     file_path: str
+    call_end_line: int | None = None
 
 
 # ─── Core class ────────────────────────────────────────────────────────────
@@ -112,6 +119,7 @@ class SingleFileCallGraph:
                 callee=e.callee,
                 full_expression=e.full_expression,
                 call_line=e.call_line,
+                call_end_line=e.call_end_line,
                 caller=e.caller,
                 is_method_call=e.is_method_call,
                 file_path=e.file_path,
@@ -211,6 +219,9 @@ class SingleFileCallGraph:
                 continue
 
             call_line = call_node.start_point[0] + 1
+            # BUG 46: 多行调用（实参换行）时 call_node.end_point 覆盖完整调用
+            # 区间，供 var_ref→call_site 桥接按行区间匹配（否则实参断链）。
+            call_end_line = call_node.end_point[0] + 1
             # BUG 9: Resolve callee using qualified names for method calls
             resolved_callee = bare_name
             is_resolved = bare_name in self._function_names
@@ -226,6 +237,7 @@ class SingleFileCallGraph:
                 caller=caller,
                 callee=resolved_callee,
                 call_line=call_line,
+                call_end_line=call_end_line,
                 full_expression=full_expr,
                 is_resolved=is_resolved,
                 is_method_call=is_method,

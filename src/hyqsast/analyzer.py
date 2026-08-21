@@ -407,32 +407,45 @@ class Analyzer:
     ) -> list[tuple[list[str], list[str]]]:
         """从 *src* 沿 DATA_FLOW/CALLS 前向 BFS 到任一 sink。
 
-        Returns: ``(节点 id 列表, 边类型列表)`` 的列表（最多 ``max_paths`` 条）。
+        Returns: ``(节点 id 列表, 边类型列表)`` 的列表（每 sink 最多 ``max_paths`` 条）。
         """
         graph = self.graph_builder.graph
         results: list[tuple[list[str], list[str]]] = []
         visited: set[str] = {src}
+        # BUG 47: 预算按 sink 独立计，而不是全 BFS 共享。旧的 ``while len(results)
+        # < max_paths`` 让先到达的 5 个 sink 吃光全局预算——加边引入新 sink
+        # （如多行实参桥接新连通的一个 println sink）会把原有 sink 的记录名额
+        # 挤掉，表现为「加边反而丢 finding」（非单调）。per_sink 给每个 sink
+        # 独立的 max_paths 个记录槽，新增 sink 不再偷别人的。
+        per_sink: dict[str, int] = defaultdict(int)
         queue: deque[tuple[str, list[str], list[str]]] = deque([(src, [src], [])])
 
-        while queue and len(results) < max_paths:
+        while queue:
             cur, node_path, edge_path = queue.popleft()
             if len(node_path) > max_depth:
                 continue
 
-            if cur in sink_set and cur != src:
+            if cur in sink_set and cur != src and per_sink[cur] < max_paths:
                 # 记录路径后【继续扩张】，不要终止：sink 节点可能是中间节点
                 # （如被过宽规则误标成 sink 的赋值节点 ``String s = foo.build(p)``）。
                 # 在此终止会遮蔽下游真 sink（漏报面 K 类：sink 遮蔽下游真 sink）——
                 # ``s`` 后面跟着的 ``exec(s)`` 就永远探索不到。
                 results.append((node_path, edge_path))
-                if len(results) >= max_paths:
-                    break
+                per_sink[cur] += 1
 
             for succ in graph.successors(cur):
-                if succ in visited:
-                    continue
                 etype = self._edge_type(cur, succ)
                 if etype is None:
+                    continue
+                if succ in visited:
+                    # BUG 47: 已访问节点恰是 sink 时，允许以另一条进入边再记录一次。
+                    # 先到先得会让「第一条到达路径」占住 sink；若该路径被位置门控
+                    # （_tainted_arg_position >= 1，参数绑定位不算注入）挡掉，合法
+                    # 的 position-0 路径就再也不会被记录——同样是加边丢 finding 的
+                    # 非单调问题。这里给每个 sink 补记录到 max_paths 条进入路径。
+                    if succ in sink_set and succ != src and per_sink[succ] < max_paths:
+                        results.append(([*node_path, succ], [*edge_path, etype]))
+                        per_sink[succ] += 1
                     continue
                 visited.add(succ)
                 queue.append((succ, [*node_path, succ], [*edge_path, etype]))

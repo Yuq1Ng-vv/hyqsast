@@ -226,6 +226,7 @@ class CallGraphBuilder:
                         caller=uc.caller,
                         callee=callee,
                         call_line=uc.call_line,
+                        call_end_line=uc.call_end_line,
                         full_expression=uc.full_expression,
                         is_resolved=True,
                         is_method_call=uc.is_method_call,

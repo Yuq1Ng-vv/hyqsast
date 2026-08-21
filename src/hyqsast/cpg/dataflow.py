@@ -168,6 +168,10 @@ class DataFlowBuilder:
                     def_location=_loc(assign.node, file_path),
                     def_expression=assign.source,
                     use_locations=sorted(use_locations),
+                    # BUG 48: 多行定义（``String sql =\\n "...'+bar+'"``）的 RHS
+                    # var-ref 落在起始行之后，def_end_line 供 RHS→LHS 桥接按
+                    # [起始行, 结束行] 区间匹配（与 BUG 46 调用侧同理）。
+                    def_end_line=assign.node.end_point[0] + 1,
                 )
             )
 

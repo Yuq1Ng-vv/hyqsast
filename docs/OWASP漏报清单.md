@@ -10,8 +10,17 @@
 > pathtraver TPR **66.2%→96.2%**（FN 45→5）、TOTAL TPR **89.9%→92.7%**
 > （**FN 143→103**），其余 10 类零 TP 丢失。修复后结果存档
 > `benchmarks/owasp/results/2026-08-21-pattern/owasp-after-fqn.json`
-> （findings 17932）+ `score-after-fqn.txt`。**本清单其余条目即当前残余 103 条漏报**。
-> 修复的 FP 代价见 §2.1 末尾。
+> （findings 17932）+ `score-after-fqn.txt`。修复的 FP 代价见 §2.1 末尾。
+>
+> **P2 修复进度（2026-08-21 落地，§4/§6）**：sqli 10 + pathtraver 残余 5 + xpathi 1
+> 共 **16 条**漏报根因实证为图桥接层两处多行断链 + 一处 BFS 非单调：
+> ① BUG 46 调用侧——多行实参 var_ref→call_site 桥接按行区间匹配；② BUG 48 赋值侧
+> ——多行赋值（`String sql =\n "…'+bar+'"`）RHS→LHS 桥接按 [起始行, 结束行] 区间
+> 匹配；③ BUG 47 BFS——全局 `max_paths` 预算被先达 sink 耗尽 + visited 首次胜出，
+> 使后达 sink 饿死。重扫全部 10 块后：sqli TPR **96.3%→100%**（FN 10→0）、
+> pathtraver TPR **96.2%→100%**（FN 5→0）、xpathi TPR **93.3%→100%**（FN 1→0）、
+> TOTAL TPR **95.3%→96.5%**（**FN 66→50**），其余 8 类零 TP 丢失。修复后结果存档
+> `benchmarks/owasp/results/2026-08-21-sqli-final/`（findings 30032）。FP 代价见 §4 末尾。
 >
 > 类别 → vuln_type 映射与 `benchmarks/owasp/score.py` 的 `CAT_MAP` 完全一致
 > （含 `related_categories` 判定），因此本清单与评分结果对得上。
@@ -24,12 +33,12 @@
 | 类别 | FN 数 | 根因归类 | 可修性 |
 |---|---|---|---|
 | hash | 40 | 配置驱动算法（`getProperty` → `getInstance(algorithm)`） | 固有（静态不可判定） |
-| pathtraver | 5 | 40 已修（§2.1，P0 落地）；5 = 流断裂 | 5 可修（需逐例定位） |
+| pathtraver | 0 | 40 已修（§2.1，P0）；残余 5 流断裂随 BUG 47 恢复（§4） | ✅ 已修复 |
 | cmdi | 0 | 37 已修（§3，P1 落地）；根因 = System.getProperty source 误吞 sink 标签 + envp 位置门控 | ✅ 已修复（代价 cmdi FPR 69.6%→100%） |
-| sqli | 10 | receiver 由跨文件 helper 赋值时实参 var_ref→call_site 桥接缺失 | 可修（需定位图构建细节） |
+| sqli | 0 | 10 已修（§4，P2 落地）；根因 = 多行调用/赋值 RHS→LHS 桥接缺失（BUG 46/48）+ BFS 非单调预算饥饿（BUG 47） | ✅ 已修复（代价 sqli FPR 97.4%→99.1%） |
 | crypto | 10 | 6 = 硬编码弱算法（DES，无 source 流入）；4 = 配置驱动 | 6 可修（精确 pattern 类别）；4 固有 |
-| xpathi | 1 | 流断裂（`evaluate(expression, …)`） | 可修 |
-| **TOTAL** | **66** | 已修 77（P0 40 + P1 cmdi 37）；可修 22 / 固有 44 | |
+| xpathi | 0 | 1 已修（§6，随 BUG 47 恢复） | ✅ 已修复（代价 xpathi FPR 90.0%→100%） |
+| **TOTAL** | **50** | 已修 93（P0 40 + P1 cmdi 37 + P2 sqli/pathtraver/xpathi 16）；可修 6 / 固有 44 | |
 
 > 注：`weakrand`（218）、`securecookie`（36）、`trustbound`（83）、`xss`（246）、
 > `ldapi`（27）全部 **0 FN**。
@@ -207,34 +216,60 @@ Process p = r.exec(args, argsEnv, new java.io.File(System.getProperty("user.dir"
 
 ---
 
-## 4. sqli — 10 FN（receiver 由跨文件 helper 赋值时实参桥接缺失）【可修】
+## 4. sqli — 10 FN（多行调用/赋值桥接断链 + BFS 非单调）【P2 已修】
 
-**根因（00100 实证）**：sink 调用 `connection.prepareStatement(sql, ...)` 的
-receiver 变量 `connection` 由**跨文件 helper 调用**赋值：
+**根因（图转储实证，非初判的「跨文件 receiver」）**：最初怀疑 00100 是
+`connection` 由跨文件 helper 赋值导致 receiver 桥接断链，但图转储显示 receiver
+桥接正常（`getSqlConnection()` 返回值经 `call_return` 正常接回 `connection`），
+初判被证伪。真正断点在图桥接层的**多行形态**，三类叠加：
+
+**① BUG 46 —— 调用侧多行实参桥接缺失**：`sql` 实参落在 `prepareStatement(` 的
+换行之后，var_ref→call_site 桥接按精确行号匹配，跨行实参的 var_ref 定位到
+`(` 所在行之外 → 断链：
 
 ```java
-// L76-79
+// BenchmarkTest00100 L76-80
 java.sql.Connection connection =
         org.owasp.benchmark.helpers.DatabaseHelper.getSqlConnection();
 java.sql.PreparedStatement statement =
-        connection.prepareStatement(sql, TYPE_FORWARD_ONLY, ...);
+        connection.prepareStatement(sql, TYPE_FORWARD_ONLY, ResultSet.TYPE_SCROLL_INSENSITIVE);
 ```
 
-此时 `sql` 实参的 var_ref → call_site 的 DATA_FLOW 桥接**缺失**（图里该 var_ref
-消失/错位），BFS 到不了 sink。
+**② BUG 48 —— 赋值侧多行 RHS→LHS 桥接缺失**：`String sql =` 定义起始行与 RHS
+中的 `bar`/`param` var-ref 所在行不同，RHS→LHS 边按精确 `{file}:{line}` 键匹配
+命不中 → `bar → sql` 的 def-use 边缺失，污点进不了 `sql`：
 
-**A/B 证据**：把真实 BenchmarkTest00100 **仅改一行** ——
-`connection = org.owasp.benchmark.helpers.DatabaseHelper.getSqlConnection()`
-换成 `connection = java.sql.DriverManager.getConnection("jdbc:sqlite:x")` ——
-同一文件立即由 **FN → 检出 sql_injection**。对照 sqli TP 用例（如 BenchmarkTest00008
-单行 `connection.prepareCall(sql)`）实参 var_ref 正常桥接。
+```java
+// BenchmarkTest00102 形态
+String sql = "select * from " + bbb + " where '" + bbb + "'";  // 跨行时 bar 落在后续行
+```
 
-**其余 9 个**多为同形态（cookie source + helper/静态字段 receiver + 各种变换），
-sink 规则本身都覆盖（`prepareStatement`/`executeQuery`/`queryForMap` 等），
-流断在调用侧。需按 00100 的 A/B 方法逐例定位后统一修图构建（调用侧桥接）。
+**③ BUG 47 —— BFS 非单调（潜在缺陷，排查 00102/00103 时暴露）**：`_bfs_to_sink`
+用**全局** `max_paths=5` sink 达预算 + visited 首次胜出，导致：新桥接让某 sink
+先达并耗尽预算 → 同 BFS 里后达的既有 sink 被饿死；且 sink 一旦被位置 ≥1 的路径
+记录就不再被位置 0 的路径重新记录 → 位置门控把 finding 挡掉。这是**全局性**缺陷
+（同时饿死了 pathtraver 5、xpathi 1），非 sqli 专属。
 
-**FN 用例（10）**：00100, 00102, 00103, 00109, 00997, 00998, 01000, 01006,
-01007, 01882。
+**修复**：
+- BUG 46：`_add_varref_to_callsite_edges` 用 tree-sitter `call_node.end_point`
+  按 `[start_line, end_line]` 区间匹配实参 var_ref（多行调用）；
+- BUG 48：`DefUsePair` 增 `def_end_line`，赋值节点存 `end_line`，
+  RHS→LHS 桥接按 `[起始行, 结束行]` 区间匹配，加 `_word_in_text` 精度闸
+  防共享行过连接；
+- BUG 47：`_bfs_to_sink` 预算改为**按 sink 独立**（per-sink `max_paths`），
+  visited 节点恰是 sink 时允许经另一条进入边再记录一次。
+
+**结果**：10 个 FN（00100, 00102, 00103, 00109, 00997, 00998, 01000, 01006,
+01007, 01882）全部恢复（均预期 sqli=true）；顺带恢复 pathtraver 5（00060,
+00061, 00065, 00952, 01836）+ xpathi 1（00207）。
+
+**FP 代价（如实记录）**：sqli 安全用例新标 4 个（**00999, 01877, 01879,
+01880**，该类别 FPR 97.4%→99.1%）；pathtraver 新标 2（00951, 01837，FPR
+98.5%→100%）；xpathi 新标 2（00683, 00941，FPR 90.0%→100%）；crypto 新标 21
+（FPR 72.4%→90.5%）。全是**流可达性过近似**（多行桥接 + per-sink 预算把更多
+可达路径接出来后，位置 0 分支不敏感 / 常量分支 / 集合取值过近似照旧放行），
+与 trustbound/xss FPR 100% 同类，无便宜规则级收窄——需分支敏感（P2/P3）。
+TOTAL TPR 95.3%→**96.5%**，FPR 69.6%→71.8%。
 
 ---
 
@@ -275,7 +310,7 @@ javax.crypto.Cipher c = javax.crypto.Cipher.getInstance(algorithm);  // algorith
 
 ---
 
-## 6. xpathi — 1 FN（流断裂）【可修】
+## 6. xpathi — 1 FN（流断裂）【P2 已修】
 
 **BenchmarkTest00207 L75**：
 
@@ -284,7 +319,9 @@ xp.evaluate(expression, xmlDocument);   // expression ← 用户输入（含 par
 ```
 
 sink 规则覆盖（`evaluate(`），但 `expression ← param` 的传播在某步断裂
-（cookie/字符串变换组合），需逐例定位。
+（cookie/字符串变换组合）。**已随 BUG 47（BFS 预算按 sink 独立）恢复** ——
+此前该 sink 被同 BFS 里先达的其它 sink 饿死，per-sink 预算后正常检出。
+代价：安全用例 00683 / 00941 新标（xpathi FPR 90.0%→100%，流可达性过近似）。
 
 ---
 
@@ -294,13 +331,13 @@ sink 规则覆盖（`evaluate(`），但 `expression ← param` 的传播在某�
 |---|---|---|---|
 | ~~P0~~ ✅ | pathtraver 追加 FQN sink 模式 | 40 | **已修**（TPR 66.2→96.2，FN 143→103；FP 代价见 §2.1） |
 | ~~P1~~ ✅ | cmdi：System.getProperty source 误吞 sink + envp 位置门控 | 37 | **已修**（TPR 70.6→100，FN 103→66；FP 代价见 §3） |
-| P1 | sqli 调用侧实参桥接（10 FN） | 10 | 中，需按 A/B 方法定位图构建细节 |
+| ~~P2~~ ✅ | sqli 多行调用/赋值桥接 + BFS 非单调（BUG 46/47/48） | 10 | **已修**（TPR 96.3→100，FN 66→50；顺带恢复 pathtraver 5 + xpathi 1；FP 代价见 §4） |
 | P2 | crypto 硬编码弱算法精确 pattern 类别（6 FN） | 6 | 中，受 crypto_weakness 红线约束需新类别 |
-| P2 | pathtraver/xpathi 残余流断裂（6 FN） | 6 | 需逐例定位 |
 | — | hash(40) / crypto(4) 配置驱动 | 44 | 固有，等配置解析能力（P2 路线图） |
 
-> 合计可修 22（P0 40 + P1 cmdi 37 已修），固有 44。当前 TPR **95.3%**（1349/1415）；
-> 修完剩余可修项后理论 TPR ≈ 96.9%（1349+22 → 1371/1415）。
+> 已修 93（P0 40 + P1 cmdi 37 + P2 sqli/pathtraver/xpathi 16），固有 44，
+> 当前 TPR **96.5%**（1365/1415）。剩余可修 6（crypto 硬编码弱算法）；
+> 修完后理论 TPR ≈ 96.9%（1365+6 → 1371/1415）。
 >
 > **铁律提醒**：上述任何收窄/桥接改动落地前，必须先在 vfa / flask-xss / vampi /
 > demo-java 四基准 + OWASP 分块回归上证明「原有命中一条不少」。

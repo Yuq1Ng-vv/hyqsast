@@ -184,13 +184,13 @@ servlet 漏洞基准，2766 个测试用例、11 个漏洞类别）全量评分 
 | trustbound | 83 | 83 | **100** | 100 |
 | xss | 246 | 246 | **100** | 100 |
 | ldapi | 27 | 27 | **100** | 100 |
-| sqli | 272 | 262 | 96.3 | 97.4 |
-| xpathi | 15 | 14 | 93.3 | 90.0 |
-| crypto | 130 | 120 | 92.3 | 72.4 |
+| sqli | 272 | 272 | **100** | 99.1 |
+| xpathi | 15 | 15 | **100** | 100 |
+| crypto | 130 | 120 | 92.3 | 90.5 |
 | cmdi | 126 | 126 | **100** | 100 |
 | hash | 129 | 89 | 69.0 | 0.0 |
-| pathtraver | 133 | 128 | 96.2 | 98.5 |
-| **TOTAL** | **1415** | **1349** | **95.3** | 69.6 |
+| pathtraver | 133 | 133 | **100** | 100 |
+| **TOTAL** | **1415** | **1365** | **96.5** | 71.8 |
 
 其中 `hash` / `weakrand` / `securecookie` 是「危险 API 使用本身」的非污点流
 漏洞（无 source 流入），由 `pattern_sinks` 机制接住；`trust_boundary` 是污点流。
@@ -205,8 +205,10 @@ hash 的 40 个 FN 全是配置驱动算法（`getInstance(algorithm)` ←
 **逐例溯源清单**（sink 源码位置 + 根因归类 + 可修性）见
 [`docs/OWASP漏报清单.md`](docs/OWASP漏报清单.md)：初始 143 条 FN，P0 已修 pathtraver
 FQN 规则缺口 40 条（TPR 89.9%→92.7%），P1 已修 cmdi 37 条（TPR 70.6%→100%，
-根因 `System.getProperty` source 误吞 sink 标签 + envp 位置门控），现剩 **66 条**
-（22 可修 / 44 配置驱动固有；两轮修复引入的 FP 代价也如实记录在案）。
+根因 `System.getProperty` source 误吞 sink 标签 + envp 位置门控），P2 已修 sqli
+10 条 + 顺带恢复 pathtraver 5 / xpathi 1（TPR 95.3%→96.5%，根因多行调用/赋值
+桥接断链 BUG 46/48 + BFS 非单调 BUG 47），现剩 **50 条**（6 可修 / 44 配置驱动
+固有；三轮修复引入的 FP 代价也如实记录在案）。
 
 ## 边界与免责
 

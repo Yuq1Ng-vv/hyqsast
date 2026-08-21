@@ -363,7 +363,10 @@ class CPGGraphBuilder:
     # 容器桥接等结构边）后旧图照常复用，新修复扫不出来。修法：key 拼入
     # language + rules 内容指纹；指纹改用文件内容 hash（不再只看文件大小，
     # 同尺寸内容变化不再静默复用旧图）。
-    _CACHE_VERSION = "v5"  # v5: 数组下标嵌套归一化 + 缓存 key 含 language/rules（G 类）
+    # v7: assignment 存 end_line（BUG 48 多行定义 RHS 桥接）
+    # v6: call_site 存 end_line（BUG 46 多行调用实参桥接）
+    # v5: 数组下标嵌套归一化 + 缓存 key 含 language/rules（G 类）
+    _CACHE_VERSION = "v7"
 
     @staticmethod
     def _cache_path_for(directory: Path, language: str = "", rules_fp: str = "") -> Path:
@@ -529,6 +532,7 @@ class CPGGraphBuilder:
                 enclosing_function=edge.caller,
                 file_path=path,
                 line=edge.call_line,
+                end_line=edge.call_end_line,
                 expression=edge.full_expression,
                 is_resolved=edge.is_resolved,
             )
@@ -582,6 +586,9 @@ class CPGGraphBuilder:
                     var_name=du.var_name,
                     file_path=path,
                     location=du.def_location,
+                    # BUG 48: 多行定义结束时行，供 _add_rhs_to_lhs_edges 做
+                    # [起始行, 结束行] 区间匹配（同 BUG 46 调用侧）。
+                    end_line=du.def_end_line,
                     # 存完整 def_expression —— 截断会切掉长 RHS（多行模板
                     # ``template = '''...''' % request.url``）尾部的污点来源，
                     # 导致 source/sink 匹配失效（漏报）。展示侧截断由报告层做。
@@ -785,6 +792,7 @@ class CPGGraphBuilder:
                         enclosing_function=edge.caller,
                         file_path=edge.file_path,
                         line=edge.call_line,
+                        end_line=edge.call_end_line,
                         expression=edge.full_expression,
                         is_resolved=True,
                         cross_file=True,
@@ -1091,8 +1099,8 @@ class CPGGraphBuilder:
     # ── Graph properties ─────────────────────────────────────────────────
 
     def _add_rhs_to_lhs_edges(self, file_path: str) -> None:
-        """Create DATA_FLOW edges from variable-refs on a line to the
-        assignment on the same line whose RHS uses them.
+        """Create DATA_FLOW edges from variable-refs in an assignment's RHS
+        span to the assignment node.
 
         For a statement like ``list = jdbc.queryForList(sql, map)``,
         this adds edges::
@@ -1105,9 +1113,14 @@ class CPGGraphBuilder:
         ``sql`` all the way to the sink *line* but never reach the sink
         *node* because variable-ref nodes carry no source text for
         pattern matching.
+
+        BUG 48: 多行定义（``String sql =\\n "SELECT..." + bar + "'";``）的 RHS
+        var-ref 落在起始行的后续行，旧逻辑按 ``{file}:{line}`` 精确匹配导致
+        RHS 变量永远桥不上定义节点（只有与起始行同行的变量能桥）。改为按定义
+        行区间 ``[line, end_line]`` 匹配——与 BUG 46 调用侧同类的多行缺陷。
         """
-        # Collect assignments by line
-        assignments_by_line: dict[str, list[str]] = {}
+        # Collect assignment spans (start_line, end_line, aid, var_name)
+        spans: list[tuple[int, int, str, str]] = []
         for nid, data in self.graph.nodes(data=True):
             if data.get("node_type") != NODE_ASSIGNMENT:
                 continue
@@ -1115,38 +1128,40 @@ class CPGGraphBuilder:
             if fp != file_path:
                 continue
             loc = data.get("location", "")
-            assignments_by_line.setdefault(loc, []).append(nid)
+            start = int(loc.rsplit(":", 1)[-1]) if ":" in loc else 0
+            end = data.get("end_line") or start
+            spans.append((start, end, nid, data.get("var_name", "")))
+        if not spans:
+            return
 
-        # Collect variable-refs by line
-        var_refs_by_line: dict[str, list[str]] = {}
+        # For each var-ref whose line falls in an assignment's span, bridge it
+        # to the assignment when the target variable differs from the var-ref
+        # (a variable doesn't "flow into" its own definition — that's already
+        # covered by the def-use chain).  Extra precision: the var-ref's name
+        # must actually appear in the assignment's RHS text (``_word_in_text``
+        # on the stored ``source``) — 否则行区间内的无关变量会被误桥接
+        # （如多行语句共享行区间的变量，vampi 上曾因此 FP 暴涨）。source
+        # 存的是完整 def_expression，缺失时退回行匹配保持召回。
         for nid, data in self.graph.nodes(data=True):
             if data.get("node_type") != NODE_VARIABLE_REF:
                 continue
             fp = data.get("file_path", "")
             if fp != file_path:
                 continue
-            loc = data.get("location", "")
-            var_refs_by_line.setdefault(loc, []).append(nid)
-
-        # For each line that has both assignments and variable-refs,
-        # add edges from each variable-ref to each assignment whose
-        # target variable differs from the var-ref (a variable doesn't
-        # "flow into" its own definition — that's already covered by
-        # the def-use chain).
-        for loc, assignment_ids in assignments_by_line.items():
-            var_ref_ids = var_refs_by_line.get(loc, [])
-            if not var_ref_ids:
+            v_var = data.get("var_name", "")
+            if not v_var:
                 continue
-            for aid in assignment_ids:
-                a_var = self.graph.nodes[aid].get("var_name", "")
-                for vid in var_ref_ids:
-                    v_var = self.graph.nodes[vid].get("var_name", "")
-                    if v_var != a_var:
-                        self.graph.add_edge(
-                            vid,
-                            aid,
-                            edge_type=EDGE_DATA_FLOW,
-                        )
+            loc = data.get("location", "")
+            vline = int(loc.rsplit(":", 1)[-1]) if ":" in loc else 0
+            for start, end, aid, a_var in spans:
+                if vline < start or vline > end:
+                    continue
+                if v_var == a_var:
+                    continue
+                a_source = self.graph.nodes[aid].get("source", "") or ""
+                if a_source and not _word_in_text(v_var, a_source):
+                    continue
+                self.graph.add_edge(nid, aid, edge_type=EDGE_DATA_FLOW)
 
     def _add_varref_to_callsite_edges(self, file_path: str) -> None:
         """Create DATA_FLOW edges from variable-refs to call-site nodes on the
@@ -1157,17 +1172,23 @@ class CPGGraphBuilder:
         :meth:`_add_rhs_to_lhs_edges` never connects their argument variables
         to the call-site node.  This method bridges variable-refs to matching
         call-site nodes so a taint BFS can reach expression-statement sinks.
+
+        BUG 46: 多行调用（``prepareStatement(\\n sql, ...)``）的实参 var-ref 落
+        在调用起始行的后续行，旧逻辑按 ``{file}:{line}`` 精确匹配导致实参
+        永远桥不上（只有与起始行同行的 receiver 能桥）。改为按调用行区间
+        ``[line, end_line]`` 匹配——var-ref 行落在调用表达式展开区间内即桥接。
         """
-        call_sites_by_loc: dict[str, list[str]] = {}
+        # (start_line, end_line, csid, expression) —— end_line 缺失时退化为单行
+        spans: list[tuple[int, int, str, str]] = []
         for nid, data in self.graph.nodes(data=True):
             if data.get("node_type") != NODE_CALL_SITE:
                 continue
             if data.get("file_path") != file_path:
                 continue
-            line = data.get("line", 0)
-            call_sites_by_loc.setdefault(f"{file_path}:{line}", []).append(nid)
-
-        if not call_sites_by_loc:
+            start = data.get("line", 0)
+            end = data.get("end_line") or start
+            spans.append((start, end, nid, data.get("expression", "")))
+        if not spans:
             return
 
         for nid, data in self.graph.nodes(data=True):
@@ -1179,8 +1200,10 @@ class CPGGraphBuilder:
             if not vname:
                 continue
             loc = data.get("location", "")
-            for csid in call_sites_by_loc.get(loc, []):
-                expr = self.graph.nodes[csid].get("expression", "")
+            vline = int(loc.rsplit(":", 1)[-1]) if ":" in loc else 0
+            for start, end, csid, expr in spans:
+                if vline < start or vline > end:
+                    continue
                 if _word_in_text(vname, expr):
                     self.graph.add_edge(nid, csid, edge_type=EDGE_DATA_FLOW)
 
