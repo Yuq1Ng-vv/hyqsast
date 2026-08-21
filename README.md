@@ -202,6 +202,9 @@ hash 的 40 个 FN 全是配置驱动算法（`getInstance(algorithm)` ←
 275 文件/块 × 10，方法见 `docs/TODO.md`；全量结果存档于
 `benchmarks/owasp/results/`）。
 
+143 条漏报的**逐例溯源清单**（sink 源码位置 + 根因归类 + 可修性）见
+[`docs/OWASP漏报清单.md`](docs/OWASP漏报清单.md)（99 条可修、44 条配置驱动固有）。
+
 ## 边界与免责
 
 - 这是**确定性、正则/tree-sitter 级**的污点分析，追求**高召回**，会有一批**误报**；
