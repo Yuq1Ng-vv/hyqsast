@@ -189,8 +189,8 @@ servlet 漏洞基准，2766 个测试用例、11 个漏洞类别）全量评分 
 | crypto | 130 | 120 | 92.3 | 72.4 |
 | cmdi | 126 | 89 | 70.6 | 69.6 |
 | hash | 129 | 89 | 69.0 | 0.0 |
-| pathtraver | 133 | 88 | 66.2 | 66.7 |
-| **TOTAL** | **1415** | **1272** | **89.9** | 63.5 |
+| pathtraver | 133 | 128 | 96.2 | 98.5 |
+| **TOTAL** | **1415** | **1312** | **92.7** | 66.7 |
 
 其中 `hash` / `weakrand` / `securecookie` 是「危险 API 使用本身」的非污点流
 漏洞（无 source 流入），由 `pattern_sinks` 机制接住；`trust_boundary` 是污点流。
@@ -202,8 +202,10 @@ hash 的 40 个 FN 全是配置驱动算法（`getInstance(algorithm)` ←
 275 文件/块 × 10，方法见 `docs/TODO.md`；全量结果存档于
 `benchmarks/owasp/results/`）。
 
-143 条漏报的**逐例溯源清单**（sink 源码位置 + 根因归类 + 可修性）见
-[`docs/OWASP漏报清单.md`](docs/OWASP漏报清单.md)（99 条可修、44 条配置驱动固有）。
+**逐例溯源清单**（sink 源码位置 + 根因归类 + 可修性）见
+[`docs/OWASP漏报清单.md`](docs/OWASP漏报清单.md)：初始 143 条 FN，P0 已修 pathtraver
+FQN 规则缺口 40 条（TPR 89.9%→92.7%），现剩 **103 条**（59 可修 / 44 配置驱动固有；
+修复引入的 FP 代价也如实记录在案）。
 
 ## 边界与免责
 

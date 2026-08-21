@@ -5,8 +5,16 @@
 > 按 OWASP 官方口径逐 `(测试, 类别)` 核对：**脆弱用例 1415，检出 1272，漏报 143**。
 > 本清单即这 143 条漏报，每条带 sink 源码位置 + 根因归类 + 可修性判定。
 >
+> **P0 修复进度（2026-08-21 落地）**：§2.1 的 40 条 FQN sink 规则缺口已修复
+> （纯追加 `new java.io.FileXxx(` 全限定类名模式）。重扫全部 10 块后：
+> pathtraver TPR **66.2%→96.2%**（FN 45→5）、TOTAL TPR **89.9%→92.7%**
+> （**FN 143→103**），其余 10 类零 TP 丢失。修复后结果存档
+> `benchmarks/owasp/results/2026-08-21-pattern/owasp-after-fqn.json`
+> （findings 17932）+ `score-after-fqn.txt`。**本清单其余条目即当前残余 103 条漏报**。
+> 修复的 FP 代价见 §2.1 末尾。
+>
 > 类别 → vuln_type 映射与 `benchmarks/owasp/score.py` 的 `CAT_MAP` 完全一致
-> （含 `related_categories` 判定），因此本清单与评分结果对得上（TOTAL FN = 143）。
+> （含 `related_categories` 判定），因此本清单与评分结果对得上。
 >
 > 复现/核对：`uv run python benchmarks/owasp/run.py`（1GB 小机分块方法见
 > `docs/TODO.md`）。
@@ -16,12 +24,12 @@
 | 类别 | FN 数 | 根因归类 | 可修性 |
 |---|---|---|---|
 | hash | 40 | 配置驱动算法（`getProperty` → `getInstance(algorithm)`） | 固有（静态不可判定） |
-| pathtraver | 45 | 40 = FQN sink 规则缺口；5 = 流断裂 | **40 可直接修**（纯追加规则） |
+| pathtraver | 5 | 40 已修（§2.1，P0 落地）；5 = 流断裂 | 5 可修（需逐例定位） |
 | cmdi | 37 | 数组字面量 `{bar}` 元素→数组 taint 传播断裂 | 可修（漏报面 A 类扩展） |
 | sqli | 10 | receiver 由跨文件 helper 赋值时实参 var_ref→call_site 桥接缺失 | 可修（需定位图构建细节） |
 | crypto | 10 | 6 = 硬编码弱算法（DES，无 source 流入）；4 = 配置驱动 | 6 可修（精确 pattern 类别）；4 固有 |
 | xpathi | 1 | 流断裂（`evaluate(expression, …)`） | 可修 |
-| **TOTAL** | **143** | | |
+| **TOTAL** | **103** | 已修 40（P0）；可修 59 / 固有 44 | |
 
 > 注：`weakrand`（218）、`securecookie`（36）、`trustbound`（83）、`xss`（246）、
 > `ldapi`（27）全部 **0 FN**。
@@ -48,6 +56,9 @@
    trustbound 是基准暴露的缺口，但补的是**通用精确规则**（硬编码弱算法子串），
    非硬编码测试 ID；安全用例 FPR（weakrand 18.9%、hash 0.0%）证明模式未过宽；
    且五基准（vfa / flask-xss / vampi / demo-java + 探针）A/B 全部零丢失。
+6. **修复代价如实披露（2026-08-21 P0）**：修 pathtraver FQN 缺口后新增 43 个安全
+   用例 FP（该类别 FPR 66.7%→98.5%），全部是流可达性过近似而非规则误匹配——不掩盖、
+   直接写进 §2.1。敢把「修漏报带来的误报」也写进文档，比只报 TPR 上升更可信。
 
 ---
 
@@ -76,9 +87,9 @@ java.security.MessageDigest md = java.security.MessageDigest.getInstance(algorit
 
 ---
 
-## 2. pathtraver — 45 FN（40 规则缺口可修 + 5 流断裂）
+## 2. pathtraver — 5 FN（40 规则缺口已修，残留 5 流断裂）
 
-### 2.1 主体 40 个：FQN（带包名）构造形式 sink 规则缺口 【可直接修】
+### 2.1 主体 40 个：FQN（带包名）构造形式 sink 规则缺口 【P0 已修复 2026-08-21】
 
 **形态**：sink 全部是**全限定名**构造调用，如 BenchmarkTest00002 L73：
 
@@ -97,16 +108,36 @@ fos = new java.io.FileOutputStream(fileName, false);
 → **`[]`**（而短名版本 → `['path_traversal']`）。单文件扫 BenchmarkTest00002
 同样无 path_traversal finding。
 
-**修复**：向 `path_traversal` sinks 追加 FQN 形式：
-`new java.io.FileOutputStream(`、`new java.io.FileInputStream(`、
+**修复（P0，已落地）**：已向 `taint_rules.yaml` 的 `path_traversal` sinks 追加 FQN
+形式：`new java.io.FileOutputStream(`、`new java.io.FileInputStream(`、
 `new java.io.FileReader(`、`new java.io.FileWriter(`、`new java.io.RandomAccessFile(`。
-这些是精确类名限定，几乎零 FP 风险，属**纯追加**，不违反铁律。
+这些是精确全限定类名+`(`，零模式级误判，属**纯追加**，不违反铁律。
 
-**FN 用例（FQN 缺口，40）**：00002, 00028, 00045, 00133, 00222, 00363, 00455,
-00456, 00459, 00529, 00627, 00785, 00787, 00788, 00953, 00956, 01034, 01111,
-01112, 01116, 01117, 01161, 01408, 01496, 01498, 01645, 01647, 01836, 01989,
-02032, 02034, 02112, 02205, 02304, 02383, 02469, 02561, 02562, 02565, 02567,
-02569。
+**修复效果（重扫全部 10 块，`owasp-after-fqn.json`）**：
+pathtraver TPR **66.2%→96.2%**（TP 88→128，FN 45→5），TOTAL TPR **89.9%→92.7%**
+（TP 1272→1312，**FN 143→103**）；其余 10 类 TP/FN **全部不变，零丢失**。
+
+**修复代价（新增 43 个安全用例 FP，pathtraver FPR 66.7%→98.5%）**：全部为
+**流可达性过近似**，非规则误匹配（FQN 模式匹配到的 sink 本身就是真实
+`FileOutputStream` 等构造调用，问题是 taint 走了过近似路径到达它）。实测三类机制：
+
+- **常量真三元条件走死分支**（00064）：`bar = (7*18)+num > 200 ? "常量" : param`
+  ——条件恒真（232>200），实际取硬编码常量，但分析不做常量折叠，两边分支都走；
+- **集合索引不敏感**（00134）：`valuesList.add(param)` 后取 `bar = valuesList.get(1)`
+  = 随后硬编码 add 的 `"safe"` 值，分析把整个列表当污点；
+- **反射/helper 返回值过近似**（00220/00628）：`bar = thing.doSomething(g25969)`
+  ——helper 返回值默认可污，实际 helper 内已中和。
+
+与既有 trustbound / xss / ldapi 的 FPR 100% 同类——高召回设计的固有代价，靠人工
+复核消化。**分析级消解**（常量折叠 / 集合索引跟踪 / 反射返回值建模）属 P2/P3 路线图
+（`docs/TODO.md`），不在规则层面处理，避免为压 FP 过拟合基准而重蹈「砍路径」覆辙。
+
+**FN 用例（FQN 缺口，40，均已修复）**：00002, 00028, 00045, 00133, 00222, 00363,
+00455, 00456, 00459, 00529, 00627, 00785, 00787, 00788, 00953, 00956, 01034, 01111,
+01112, 01116, 01117, 01161, 01408, 01496, 01498, 01645, 01647, 01989, 02032, 02034,
+02112, 02205, 02304, 02383, 02469, 02561, 02562, 02565, 02567, 02569。
+（注：初版清单曾把 01836 误列于此，实证它属 §2.2 流断裂、修复后仍 FN——上面 40 条
+与修复效果逐一核对过，均转为 TP。）
 
 ### 2.2 其余 5 个：流断裂 【可修，需逐例定位】
 
@@ -239,14 +270,15 @@ sink 规则覆盖（`evaluate(`），但 `expression ← param` 的传播在某�
 
 | 优先级 | 项 | FN 影响 | 工作量/风险 |
 |---|---|---|---|
-| P0 | pathtraver 追加 FQN sink 模式（40 FN） | 40 | 极小，纯追加，近零 FP 风险 |
+| ~~P0~~ ✅ | pathtraver 追加 FQN sink 模式 | 40 | **已修**（TPR 66.2→96.2，FN 143→103；FP 代价见 §2.1） |
 | P1 | cmdi 数组字面量 taint 桥接（37 FN） | 37 | 中，涉及图构建；注意 envp 位置判定 |
 | P1 | sqli 调用侧实参桥接（10 FN） | 10 | 中，需按 A/B 方法定位图构建细节 |
 | P2 | crypto 硬编码弱算法精确 pattern 类别（6 FN） | 6 | 中，受 crypto_weakness 红线约束需新类别 |
 | P2 | pathtraver/xpathi 残余流断裂（6 FN） | 6 | 需逐例定位 |
 | — | hash(40) / crypto(4) 配置驱动 | 44 | 固有，等配置解析能力（P2 路线图） |
 
-> 合计可修 99，固有 44。修完可修项后理论 TPR ≈ 96.9%（1272+99 → 1371/1415）。
+> 合计可修 59（P0 已修 40），固有 44。当前 TPR **92.7%**（1312/1415）；修完剩余
+> 可修项后理论 TPR ≈ 96.9%（1312+59 → 1371/1415）。
 >
 > **铁律提醒**：上述任何收窄/桥接改动落地前，必须先在 vfa / flask-xss / vampi /
 > demo-java 四基准 + OWASP 分块回归上证明「原有命中一条不少」。

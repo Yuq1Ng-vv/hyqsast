@@ -4012,6 +4012,11 @@ java:
     - new FileReader(
     - new File(
     - new RandomAccessFile(
+    - new java.io.FileInputStream(
+    - new java.io.FileReader(
+    - new java.io.FileOutputStream(
+    - new java.io.FileWriter(
+    - new java.io.RandomAccessFile(
     - Files.read(
     - Files.newInputStream(
     - Files.readAllBytes(

@@ -78,6 +78,15 @@
   子集 A/B 每类别 TP ≥ before（12 条丢失全是跨方法 `@Override` 样板 FP 产物，
   无一条真实检测）。分块扫描结果见
   `benchmarks/owasp/results/2026-08-21-pattern/`。
+- **P0：pathtraver FQN sink 规则补齐**（`taint_rules.yaml`，2026-08-21）：40 条
+  pathtraver FN 源自 FQN 构造形式没进 sink 规则——`new java.io.FileOutputStream(`
+  匹配不到短名 `new FileOutputStream(`（中间隔 `java.io.`），`match_all_sinks`
+  纯子串匹配 → 返回 `[]`。纯追加 5 个全限定类名模式后：TOTAL TPR **89.9%→92.7%**
+  （TP 1272→1312，FN 143→103），其余 10 类零 TP 丢失；pathtraver FPR 66.7%→98.5%
+  （+43 安全用例 FP，全部流可达性过近似：常量真三元死分支 / 集合索引不敏感 /
+  反射返回值过近似，非规则误匹配，与 trustbound/xss FPR 100% 同类）。逐例溯源 +
+  FP 代价见 `docs/OWASP漏报清单.md`（§0.6、§2.1）；修复后结果
+  `owasp-after-fqn.json`。残余 FN 103 = 可修 59 / 固有 44。
 
 ## P2（想起来了就做）
 
