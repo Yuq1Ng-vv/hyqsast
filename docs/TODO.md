@@ -116,6 +116,23 @@
   21，FPR 四类升 1.7–18.1 个百分点），流可达性过近似，分支敏感列入 P3。逐例溯源
   + FP 代价见 `docs/OWASP漏报清单.md` §4；结果存档
   `benchmarks/owasp/results/2026-08-21-sqli-final/`。
+- **crypto 硬编码弱算法 pattern 类别 `weak_crypto`（P3，`taint_rules.yaml` +
+  `analyzer.py`，BUG 49）**：OWASP crypto 10 FN（00053/55/56/57/1822/1823 硬编码
+  `Cipher.getInstance("DES/CBC/…")` + 00945/46/1829/1830 配置驱动）——弱算法是
+  「API 使用本身」无 source 流入，而 `crypto_weakness` 永不可标 pattern 型（红线：
+  sinks 含宽模式会 FP 爆炸）。新建精确专用类别 `weak_crypto`，进 `pattern_sinks`，
+  只列硬编码弱算法精确子串：`getInstance("DES"`（闭引号避开 `"DESede`）、裸
+  `DES/CBC`（`/` 避开 `DESede/CBC`）、RC4/RC2/Blowfish/AES-ECB/AES-CBC-NoPadding。
+  **实证推翻「4 个配置驱动固有」**：它们虽 `Cipher.getInstance(algorithm)` 配置
+  驱动，但密钥生成是硬编码 `KeyGenerator.getInstance("DES")`，一并接住。评分侧
+  weak_crypto finding 带 `related_categories=["crypto_weakness"]`（score.py 零
+  改动即算 crypto）；`_pattern_findings` 新增 covered 位置去重（节点已被 taint 型
+  crypto_weakness 同位置报过则让位），避免 ~217 已命中测试各多一条重复。
+  效果：crypto TPR **92.3%→100%**（FN 10→0），TOTAL TPR **96.5%→97.2%**
+  （FN 50→40），其余 10 类逐项零 TP 丢失、**FP 零增加**（crypto FPR 90.5%、
+  TOTAL FPR 71.8% 不变），四基准 A/B 零丢失（铁律通过）。结果存档
+  `benchmarks/owasp/results/2026-08-21-crypto-pattern/`。逐例溯源见
+  `docs/OWASP漏报清单.md` §5。可修 FN 至此全部清零。
 
 ## P2（想起来了就做）
 
@@ -274,9 +291,9 @@ BFS 旧实现**命中 sink 即终止路径**——中间节点被过宽规则误
 
 ### L. pattern 型类别的固有边界（⚠️ 2026-08-21 新增，记录未来 FN 面）
 
-非污点流 pattern 型类别（`insecure_hash` / `weak_randomness` / `secure_cookie`）
-对「硬编码危险 API 使用」100% 接住，但以下形态**确定性引擎接不住，是固有 FN**，
-写下来避免将来误当 bug 或误砍规则：
+非污点流 pattern 型类别（`insecure_hash` / `weak_randomness` / `secure_cookie` /
+`weak_crypto`）对「硬编码危险 API 使用」100% 接住，但以下形态**确定性引擎接不住，
+是固有 FN**，写下来避免将来误当 bug 或误砍规则：
 
 - **算法/参数来自外部配置或变量**（`getInstance(algorithm)` ←
   `getProperty("hashAlg1", "SHA512")`）：字符串在变量里，无法确定性判定强弱。
@@ -296,7 +313,10 @@ BFS 旧实现**命中 sink 即终止路径**——中间节点被过宽规则误
   / `new RandomAccess(` 碰撞）；但 `ThreadLocalRandom` / `SplittableRandom` /
   `Random` 经包装类（`MyRand.getInstance()`）形态漏。
 - **pattern 型 vs taint 型同节点**：某节点既是 pattern 型又是 BFS 可达 sink，
-  会产出两条 finding（类别不同），聚合只对 BFS 侧生效 —— 已知重复候选，OK。
+  会产出两条 finding（类别不同），聚合只对 BFS 侧生效。`weak_crypto` 例外：已按
+  (文件, 行, 类别[含别名]) covered 集让位给同位置 taint 型 `crypto_weakness`
+  （BUG 49），避免 ~217 已命中测试各多一条重复；其余 pattern 类别未做此类
+  （`insecure_hash`/`weak_randomness` 无同名 taint 类别，不冲突）——已知重复候选，OK。
 
 ## 已知限制（与 README 原文对齐）
 

@@ -186,16 +186,18 @@ servlet 漏洞基准，2766 个测试用例、11 个漏洞类别）全量评分 
 | ldapi | 27 | 27 | **100** | 100 |
 | sqli | 272 | 272 | **100** | 99.1 |
 | xpathi | 15 | 15 | **100** | 100 |
-| crypto | 130 | 120 | 92.3 | 90.5 |
+| crypto | 130 | 130 | **100** | 90.5 |
 | cmdi | 126 | 126 | **100** | 100 |
 | hash | 129 | 89 | 69.0 | 0.0 |
 | pathtraver | 133 | 133 | **100** | 100 |
-| **TOTAL** | **1415** | **1365** | **96.5** | 71.8 |
+| **TOTAL** | **1415** | **1375** | **97.2** | 71.8 |
 
-其中 `hash` / `weakrand` / `securecookie` 是「危险 API 使用本身」的非污点流
-漏洞（无 source 流入），由 `pattern_sinks` 机制接住；`trust_boundary` 是污点流。
-hash 的 40 个 FN 全是配置驱动算法（`getInstance(algorithm)` ←
-`getProperty("hashAlg1")`），静态不可判定。回归铁律（不增漏报）：五基准
+其中 `hash` / `weakrand` / `securecookie` / `weak_crypto` 是「危险 API 使用本身」
+的非污点流漏洞（无 source 流入），由 `pattern_sinks` 机制接住；`trust_boundary`
+是污点流。hash 的 40 个 FN 全是配置驱动算法（`getInstance(algorithm)` ←
+`getProperty("hashAlg1")`），静态不可判定。`weak_crypto`（硬编码弱算法 DES/RC 等）
+带 `related_categories=["crypto_weakness"]` 并入 crypto 评分，crypto 由 92.3% 补到
+**100%** 且 FP 零增加（safe 用例 0 命中）。回归铁律（不增漏报）：五基准
 （vfa / flask-xss / vampi / demo-java + 探针）A/B 全部零丢失。
 
 复现：`uv run python benchmarks/owasp/run.py`（1GB 小机器须**分块扫描**，
@@ -207,8 +209,10 @@ hash 的 40 个 FN 全是配置驱动算法（`getInstance(algorithm)` ←
 FQN 规则缺口 40 条（TPR 89.9%→92.7%），P1 已修 cmdi 37 条（TPR 70.6%→100%，
 根因 `System.getProperty` source 误吞 sink 标签 + envp 位置门控），P2 已修 sqli
 10 条 + 顺带恢复 pathtraver 5 / xpathi 1（TPR 95.3%→96.5%，根因多行调用/赋值
-桥接断链 BUG 46/48 + BFS 非单调 BUG 47），现剩 **50 条**（6 可修 / 44 配置驱动
-固有；三轮修复引入的 FP 代价也如实记录在案）。
+桥接断链 BUG 46/48 + BFS 非单调 BUG 47），P3 已修 crypto 10 条（TPR 92.3%→100%，
+新建 `weak_crypto` 精确 pattern 类别，4 个「配置驱动」实证含硬编码
+`KeyGenerator.getInstance("DES")` 一并恢复；FP 零增加）。现剩 **40 条**全部为
+hash 配置驱动算法（静态不可判定，固有）；四轮修复引入的 FP 代价也如实记录在案。
 
 ## 边界与免责
 

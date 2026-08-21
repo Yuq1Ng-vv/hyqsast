@@ -4525,6 +4525,24 @@ java:
     - DigestUtils.shaHex(
     - DigestUtils.sha1(
     - DigestUtils.sha1Hex(
+    # 弱加密（CWE-327）：硬编码弱算法（DES/RC4/RC2/Blowfish/AES-ECB 等）——
+    # 无 source 流入（弱算法是「API 使用本身」，与 hash/weakrand 同类），BFS
+    # 够不到。与 crypto_weakness 的关系：crypto_weakness 是 taint 型（source
+    # 流入弱加密 API 才报），其 sinks 含宽模式（getInstance(、Random( …），
+    # 标 pattern 型会命中强算法 FP 爆炸（红线，见 pattern_sinks 注记）。本类别
+    # 只列**硬编码弱算法精确子串**，避开强算法/DESede 子串碰撞：``getInstance(
+    # "DES"``（闭引号避开 ``"DESede``）与裸 ``DES/CBC``（``/`` 避开 ``DESede/CBC``，
+    # 标识符不含 ``/`` 故无变量名碰撞）；
+    # 不列裸 ``"DES`` 前缀。OWASP 里 DES 全部 crypto=true、AES/GCM/CCM 全部
+    # 安全，本组子串在基准上 FP=0（探针已验证）。
+    weak_crypto:
+    - getInstance("DES"
+    - DES/CBC
+    - getInstance("RC4"
+    - getInstance("RC2"
+    - getInstance("Blowfish"
+    - getInstance("AES/ECB"
+    - getInstance("AES/CBC/NoPadding"
     # 弱随机数（CWE-330）：java.util.Random / Math.random 替代 SecureRandom。
     # 用 ``java.util.Random`` 而不用裸 ``Random(`` —— 后者是 ``SecureRandom()``
     # 的子串会误报；OWASP safe 用例全用 SecureRandom，不会命中。``new Random(``
@@ -4712,8 +4730,20 @@ java:
   #   - weak_randomness  只用 java.util.Random / Math.random（避开
   #                       SecureRandom() 子串碰撞）
   #   - secure_cookie    setSecure(false) 即漏洞候选
+  #   - weak_crypto      硬编码弱算法精确子串（DES/RC4/RC2/Blowfish/AES-ECB 等，
+  #                       避开 DESede/强算法子串碰撞；与 crypto_weakness 的 taint
+  #                       型共存，见下「weak_crypto 与 crypto_weakness」注记）
   # crypto_weakness 保持污点流（BFS-only），由 source 流入时照常产出。
+  #
+  # weak_crypto 与 crypto_weakness：crypto_weakness 是 taint 型（有 source 流入
+  # 才报，sinks 含 getInstance( 等宽模式），弱加密 API 若同时被 source 流入仍走
+  # 它；weak_crypto 只接「没有任何 source 流入的硬编码弱算法」这类 BFS 够不到
+  # 的。两者在同一节点上都命中时，analyzer 按位置去重（weak_crypto 让位给已有
+  # 的 crypto_weakness taint finding，见 analyzer._pattern_findings），避免重复。
+  # 评分侧：weak_crypto finding 带 related_categories=["crypto_weakness"]，
+  # 使 score.py 的类别命中判断把两者都算 crypto。
   pattern_sinks:
   - insecure_hash
   - weak_randomness
   - secure_cookie
+  - weak_crypto

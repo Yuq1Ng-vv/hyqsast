@@ -73,6 +73,16 @@ _SINK_STR_TEMPLATE_CATS: frozenset[str] = frozenset(
     }
 )
 
+# pattern 型类别 → 同类 taint 型类别（评分侧算同一漏洞类别）。weak_crypto 与
+# crypto_weakness 是同一弱加密漏洞的两种接法：crypto_weakness 是 taint 型
+# （source 流入弱加密 API 才报），weak_crypto 是 pattern 型（硬编码弱算法字面量，
+# BFS 够不到）。节点已被 taint 型同类报过时，pattern 型让位避免重复 finding
+# （见 _pattern_findings 的 covered 去重）；评分侧靠 Finding.related_categories
+# 让 score.py 把 weak_crypto 也算 crypto 命中。
+_PATTERN_ALIAS_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "weak_crypto": ("crypto_weakness",),
+}
+
 
 class Analyzer:
     """目录级确定性污点分析。"""
@@ -255,7 +265,18 @@ class Analyzer:
         # 永远够不到；类别本身代表危险 API 使用，对每个被标上该类别的节点
         # 无条件产出 finding（source==sink==该节点）。放在聚合之后追加，避免
         # 与 BFS finding 的 (src,sink) 位置碰撞被误合并。
-        pattern_findings, pattern_skipped = self._pattern_findings()
+        # BUG 49: pattern 型追加前的「同类 taint 已报过」位置去重。把 taint 型
+        # finding 的 (sink 文件, sink 行, 类别[含 related_categories 别名]) 记成
+        # covered 集，pattern 型发现里同一位置命中同类别的节点就跳过（如某测试
+        # 的 Cipher.getInstance("DES…") 已由 taint 型 crypto_weakness 报过，就不
+        # 再补一条 weak_crypto，避免 ~217 个已命中测试各多一条重复）。
+        covered: set[tuple[str, int, str]] = set()
+        for f in findings:
+            if f.sink and f.sink.file_path and f.sink.line:
+                covered.add((f.sink.file_path, f.sink.line, f.vuln_type))
+                for rc in f.related_categories:
+                    covered.add((f.sink.file_path, f.sink.line, rc))
+        pattern_findings, pattern_skipped = self._pattern_findings(covered)
         if pattern_skipped:
             self._truncated_categories = dict(pattern_skipped)
         findings.extend(pattern_findings)
@@ -269,7 +290,9 @@ class Analyzer:
         }
         return findings
 
-    def _pattern_findings(self) -> tuple[list[Finding], dict[str, int]]:
+    def _pattern_findings(
+        self, covered: set[tuple[str, int, str]] | None = None
+    ) -> tuple[list[Finding], dict[str, int]]:
         """非污点流 pattern 型漏洞的 finding + 截断计数。
 
         这类类别（``taint_rules.yaml`` 的 ``pattern_sinks`` 标记）的 sink 节点
@@ -280,6 +303,11 @@ class Analyzer:
 
         放在 :meth:`_aggregate_multi_category` 之后追加，避免 pattern finding
         的 (src,sink) 位置与 BFS finding 的 sink 位置碰撞被误合并。
+
+        ``covered``：已有 taint 型 finding 的 (文件, 行, 类别[含别名]) 集合
+        （见 :meth:`_build_findings` 的 BUG 49 注记）。节点命中 pattern 型类别
+        但同位置已被其 taint 型同类（``_PATTERN_ALIAS_CATEGORIES``）报过时，
+        跳过，避免同一漏洞重复报（如 weak_crypto 让位 crypto_weakness）。
         """
         pattern_cats = self.taint_loader.pattern_categories(self.language)
         if not pattern_cats:
@@ -294,10 +322,21 @@ class Analyzer:
             hits = [c for c in sink_cats if c in pattern_cats]
             if not hits:
                 continue
+            # 位置去重：仅当有 covered 集（taint 型已产出）且节点位置可定位时评估。
+            node_file: str | None = None
+            node_line: int | None = None
+            if covered:
+                node_file, node_line = self._node_fields(data)[:2]
             for cat in hits:
                 if per_category[cat] >= self.max_findings_per_category:
                     skipped[cat] += 1
                     continue
+                if covered and node_file and node_line:
+                    if any(
+                        (node_file, node_line, alias) in covered
+                        for alias in _PATTERN_ALIAS_CATEGORIES.get(cat, ())
+                    ):
+                        continue
                 finding = self._pattern_node_to_finding(nid, cat)
                 if finding is None:
                     continue
@@ -322,10 +361,15 @@ class Analyzer:
             category=cat,
         )
         severity = self.severity_overrides.get(cat) or severity_for(cat)
+        # BUG 49: pattern 型类别（weak_crypto）带上同类 taint 型类别
+        # （crypto_weakness）作 related_categories，使 score.py 的类别命中判断
+        # 把两者都算同一类别；同时供 _pattern_findings 的 covered 去重互认。
+        aliases = list(_PATTERN_ALIAS_CATEGORIES.get(cat, ()))
         return Finding(
             id=f"{cat}-{file_path}:{line}",
             vuln_type=cat,
             severity=severity,
+            related_categories=aliases,
             source=ref,
             sink=ref,
             call_chain=[

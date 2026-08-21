@@ -22,6 +22,15 @@
 > TOTAL TPR **95.3%→96.5%**（**FN 66→50**），其余 8 类零 TP 丢失。修复后结果存档
 > `benchmarks/owasp/results/2026-08-21-sqli-final/`（findings 30032）。FP 代价见 §4 末尾。
 >
+> **P3 修复进度（2026-08-21 落地，§5）**：crypto 10 FN 全部恢复——6 个硬编码弱算法
+> 用新精确 pattern 类别 `weak_crypto`（只在 pattern_sinks 标记的类别无条件产出），
+> 4 个「配置驱动」经实证其实也含硬编码 `KeyGenerator.getInstance("DES")`，一并接住。
+> 重扫全部 10 块后：crypto TPR **92.3%→100%**（**FN 10→0**），TOTAL TPR
+> **96.5%→97.2%**（**FN 50→40**），其余 10 类逐项零 TP 丢失、**FP 零增加**
+> （crypto FPR 90.5%、TOTAL FPR 71.8% 均不变）。修复后结果存档
+> `benchmarks/owasp/results/2026-08-21-crypto-pattern/`（findings 30554）。
+> 至此可修 FN 全部清零，残余 40 全为配置驱动固有。详情见 §5。
+>
 > 类别 → vuln_type 映射与 `benchmarks/owasp/score.py` 的 `CAT_MAP` 完全一致
 > （含 `related_categories` 判定），因此本清单与评分结果对得上。
 >
@@ -36,9 +45,9 @@
 | pathtraver | 0 | 40 已修（§2.1，P0）；残余 5 流断裂随 BUG 47 恢复（§4） | ✅ 已修复 |
 | cmdi | 0 | 37 已修（§3，P1 落地）；根因 = System.getProperty source 误吞 sink 标签 + envp 位置门控 | ✅ 已修复（代价 cmdi FPR 69.6%→100%） |
 | sqli | 0 | 10 已修（§4，P2 落地）；根因 = 多行调用/赋值 RHS→LHS 桥接缺失（BUG 46/48）+ BFS 非单调预算饥饿（BUG 47） | ✅ 已修复（代价 sqli FPR 97.4%→99.1%） |
-| crypto | 10 | 6 = 硬编码弱算法（DES，无 source 流入）；4 = 配置驱动 | 6 可修（精确 pattern 类别）；4 固有 |
+| crypto | 0 | 10 已修（§5，P3 落地）；新建 `weak_crypto` 精确 pattern 类别（6 硬编码弱算法 + 4 配置驱动经实证含硬编码 `KeyGenerator.getInstance("DES")` 一并恢复） | ✅ 已修复（FP 零增加） |
 | xpathi | 0 | 1 已修（§6，随 BUG 47 恢复） | ✅ 已修复（代价 xpathi FPR 90.0%→100%） |
-| **TOTAL** | **50** | 已修 93（P0 40 + P1 cmdi 37 + P2 sqli/pathtraver/xpathi 16）；可修 6 / 固有 44 | |
+| **TOTAL** | **40** | 已修 103（P0 40 + P1 cmdi 37 + P2 sqli/pathtraver/xpathi 16 + P3 crypto 10）；可修全部清零 / 固有 40 | |
 
 > 注：`weakrand`（218）、`securecookie`（36）、`trustbound`（83）、`xss`（246）、
 > `ldapi`（27）全部 **0 FN**。
@@ -275,7 +284,7 @@ TOTAL TPR 95.3%→**96.5%**，FPR 69.6%→71.8%。
 
 ## 5. crypto — 10 FN（6 硬编码弱算法 + 4 配置驱动）
 
-### 5.1 6 个：硬编码弱算法，无 source 流入 【可修，需新精确 pattern 类别】
+### 5.1 6 个：硬编码弱算法，无 source 流入 【P3 已修】
 
 **形态**：`Cipher.getInstance("DES/CBC/PKCS5Padding", ...)` / `KeyGenerator
 .getInstance("DES")` —— **弱算法是硬编码字符串，没有任何 source 流入 sink 配置**：
@@ -291,20 +300,36 @@ javax.crypto.SecretKey key = javax.crypto.KeyGenerator.getInstance("DES").genera
 这里弱算法是「API 使用本身」，与 hash/weakrand 同类，但 **crypto_weakness 永不可
 标 pattern 型**（红线：其 sinks 含宽模式，无条件产出会 FP 爆炸）。
 
-**修复**：按 hash 的先例，新建**精确专用 pattern 类别**（如 `weak_crypto`），只列
-硬编码弱算法子串（`"DES/`、`"RC4`、`"RC2`、`"Blowfish`、`"AES/ECB` 等，避开
-强算法/`DESede` 子串冲突），进 `pattern_sinks`。落地前按铁律跑五基准 + OWASP 回归。
+**修复（P3，2026-08-21 落地）**：按 hash 的先例，新建**精确专用 pattern 类别**
+`weak_crypto`，进 `pattern_sinks`（`taint_rules.yaml` java sinks + `analyzer.py`
+`_pattern_findings`）。只列**硬编码弱算法精确子串**，避开强算法/`DESede` 子串
+碰撞：`getInstance("DES"`（闭引号避开 `"DESede`）、裸 `DES/CBC`（`/` 避开
+`DESede/CBC`，标识符不含 `/` 无变量名碰撞）、`getInstance("RC4"` / `"RC2"` /
+`"Blowfish"` / `"AES/ECB"` / `"AES/CBC/NoPadding"`。子串在 OWASP 全部 crypto=true
+测试、安全用例 0 命中（源码级预检 + 全量回归双确认）。
+
+**与 crypto_weakness 的关系（BUG 49）**：两者是同一弱加密漏洞的两种接法。
+`crypto_weakness` 保持 taint 型（source 流入才报）；`weak_crypto` 只接「无 source
+流入的硬编码弱算法」这类 BFS 够不到的。评分侧 `weak_crypto` finding 带
+`related_categories=["crypto_weakness"]`，score.py 无需改动即算 crypto 命中。
+节点已由 taint 型 `crypto_weakness` 同位置报过时，`_pattern_findings` 按
+(文件, 行, 类别[含别名]) 的 covered 集去重，避免重复 finding。
 
 **FN 用例（硬编码弱算法，6）**：00053, 00055, 00056, 00057, 01822, 01823。
 
-### 5.2 4 个：配置驱动算法（固有）
+### 5.2 4 个：配置驱动算法 【P3 已修——实证推翻「固有」判定】
 
 ```java
-// BenchmarkTest00945 L73
+// BenchmarkTest00945 L73-76
 javax.crypto.Cipher c = javax.crypto.Cipher.getInstance(algorithm);  // algorithm ← getProperty
+javax.crypto.SecretKey key = javax.crypto.KeyGenerator.getInstance("DES").generateKey();  // ← 硬编码！
 ```
 
-同 hash：算法名在配置里，静态不可判定。**固有**。
+初判按 hash 先例标「算法名在配置里，静态不可判定 → 固有」。**实证推翻**：这 4 个
+测试的 `Cipher.getInstance(algorithm)` 虽配置驱动，但**密钥生成器都是硬编码
+`KeyGenerator.getInstance("DES").generateKey()`**（00945/00946/01829/01830 L76
+逐一确认）。弱 DES 密钥生成是独立于 Cipher 算法的弱加密使用，`getInstance("DES"`
+子串精确命中，随 §5.1 一并恢复。
 
 **FN 用例（配置驱动，4）**：00945, 00946, 01829, 01830。
 
@@ -332,12 +357,12 @@ sink 规则覆盖（`evaluate(`），但 `expression ← param` 的传播在某�
 | ~~P0~~ ✅ | pathtraver 追加 FQN sink 模式 | 40 | **已修**（TPR 66.2→96.2，FN 143→103；FP 代价见 §2.1） |
 | ~~P1~~ ✅ | cmdi：System.getProperty source 误吞 sink + envp 位置门控 | 37 | **已修**（TPR 70.6→100，FN 103→66；FP 代价见 §3） |
 | ~~P2~~ ✅ | sqli 多行调用/赋值桥接 + BFS 非单调（BUG 46/47/48） | 10 | **已修**（TPR 96.3→100，FN 66→50；顺带恢复 pathtraver 5 + xpathi 1；FP 代价见 §4） |
-| P2 | crypto 硬编码弱算法精确 pattern 类别（6 FN） | 6 | 中，受 crypto_weakness 红线约束需新类别 |
-| — | hash(40) / crypto(4) 配置驱动 | 44 | 固有，等配置解析能力（P2 路线图） |
+| ~~P3~~ ✅ | crypto 硬编码弱算法精确 pattern 类别 `weak_crypto`（6 FN） | 6 | **已修**（TPR 92.3→100，FN 50→40；配置驱动 4 个经实证含硬编码 KeyGenerator DES 一并恢复，见 §5） |
+| — | hash(40) 配置驱动 | 40 | 固有，等配置解析能力（P2 路线图） |
 
-> 已修 93（P0 40 + P1 cmdi 37 + P2 sqli/pathtraver/xpathi 16），固有 44，
-> 当前 TPR **96.5%**（1365/1415）。剩余可修 6（crypto 硬编码弱算法）；
-> 修完后理论 TPR ≈ 96.9%（1365+6 → 1371/1415）。
+> 已修 **103**（P0 40 + P1 cmdi 37 + P2 sqli/pathtraver/xpathi 16 + P3 crypto 10），
+> 固有 40（全为 hash 配置驱动），当前 TPR **97.2%**（1375/1415）。
+> 可修 FN 已全部清零。
 >
 > **铁律提醒**：上述任何收窄/桥接改动落地前，必须先在 vfa / flask-xss / vampi /
 > demo-java 四基准 + OWASP 分块回归上证明「原有命中一条不少」。
