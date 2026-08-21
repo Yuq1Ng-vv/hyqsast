@@ -171,6 +171,37 @@ result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.
 - **框架**（接口提取）：Spring、Flask、Django、FastAPI、Express
 - **分析**：污点 source→sink 传播（`taint_rules.yaml` 驱动，Java 20 类 / Python / JS 各有对应规则）
 
+## 验证（基准回归）
+
+**[OWASP Benchmark](https://github.com/OWASP-Benchmark/BenchmarkJava)**（Java
+servlet 漏洞基准，2766 个测试用例、11 个漏洞类别）全量评分 —— 官方口径
+**TPR = TP/(TP+FN)**（仅脆弱用例）、**FPR = FP/(FP+TN)**（仅安全用例）：
+
+| 类别 | 脆弱用例 | TP | TPR% | FPR% |
+|---|---|---|---|---|
+| weakrand | 218 | 218 | **100** | 18.9 |
+| securecookie | 36 | 36 | **100** | 0.0 |
+| trustbound | 83 | 83 | **100** | 100 |
+| xss | 246 | 246 | **100** | 100 |
+| ldapi | 27 | 27 | **100** | 100 |
+| sqli | 272 | 262 | 96.3 | 97.4 |
+| xpathi | 15 | 14 | 93.3 | 90.0 |
+| crypto | 130 | 120 | 92.3 | 72.4 |
+| cmdi | 126 | 89 | 70.6 | 69.6 |
+| hash | 129 | 89 | 69.0 | 0.0 |
+| pathtraver | 133 | 88 | 66.2 | 66.7 |
+| **TOTAL** | **1415** | **1272** | **89.9** | 63.5 |
+
+其中 `hash` / `weakrand` / `securecookie` 是「危险 API 使用本身」的非污点流
+漏洞（无 source 流入），由 `pattern_sinks` 机制接住；`trust_boundary` 是污点流。
+hash 的 40 个 FN 全是配置驱动算法（`getInstance(algorithm)` ←
+`getProperty("hashAlg1")`），静态不可判定。回归铁律（不增漏报）：五基准
+（vfa / flask-xss / vampi / demo-java + 探针）A/B 全部零丢失。
+
+复现：`uv run python benchmarks/owasp/run.py`（1GB 小机器须**分块扫描**，
+275 文件/块 × 10，方法见 `docs/TODO.md`；全量结果存档于
+`benchmarks/owasp/results/`）。
+
 ## 边界与免责
 
 - 这是**确定性、正则/tree-sitter 级**的污点分析，追求**高召回**，会有一批**误报**；
