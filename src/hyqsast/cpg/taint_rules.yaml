@@ -3393,7 +3393,11 @@ java:
     - .getPart(
     - .getSubmittedFileName(
     - System.getenv(
-    - System.getProperty(
+    # BUG 45（漏报面：cmdi 37 FN 主因）：System.getProperty( 是 JVM 部署配置、
+    # 非逐请求用户输入，作为 command_injection source 会在 sink 调用内部
+    # （如 ``r.exec(args, argsEnv, new java.io.File(System.getProperty("user.dir")))``）
+    # 命中 source → source 优先于 sink 把 exec 的 sink 标签吞掉，cmdi 全量漏报。
+    # 移除该弱 source；需要「配置/环境输入」语义时另走 P2 配置类漏洞专项。
     - System.getProperties(
     - '@RequestParam'
     - '@PathVariable'

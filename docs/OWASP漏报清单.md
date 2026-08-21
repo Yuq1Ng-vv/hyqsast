@@ -25,11 +25,11 @@
 |---|---|---|---|
 | hash | 40 | 配置驱动算法（`getProperty` → `getInstance(algorithm)`） | 固有（静态不可判定） |
 | pathtraver | 5 | 40 已修（§2.1，P0 落地）；5 = 流断裂 | 5 可修（需逐例定位） |
-| cmdi | 37 | 数组字面量 `{bar}` 元素→数组 taint 传播断裂 | 可修（漏报面 A 类扩展） |
+| cmdi | 0 | 37 已修（§3，P1 落地）；根因 = System.getProperty source 误吞 sink 标签 + envp 位置门控 | ✅ 已修复（代价 cmdi FPR 69.6%→100%） |
 | sqli | 10 | receiver 由跨文件 helper 赋值时实参 var_ref→call_site 桥接缺失 | 可修（需定位图构建细节） |
 | crypto | 10 | 6 = 硬编码弱算法（DES，无 source 流入）；4 = 配置驱动 | 6 可修（精确 pattern 类别）；4 固有 |
 | xpathi | 1 | 流断裂（`evaluate(expression, …)`） | 可修 |
-| **TOTAL** | **103** | 已修 40（P0）；可修 59 / 固有 44 | |
+| **TOTAL** | **66** | 已修 77（P0 40 + P1 cmdi 37）；可修 22 / 固有 44 | |
 
 > 注：`weakrand`（218）、`securecookie`（36）、`trustbound`（83）、`xss`（246）、
 > `ldapi`（27）全部 **0 FN**。
@@ -153,30 +153,52 @@ sink 本身能匹配（`new java.io.File(` 走裸 `File(` 兜底模式 / `Files.
 
 ---
 
-## 3. cmdi — 37 FN（数组字面量 taint 传播断裂）【可修】
+## 3. cmdi — 37 FN（System.getProperty 误吞 sink 标签 + envp 位置门控）【已修复 2026-08-21】
 
-**形态 100% 统一**（37/37）：用户输入经各种变换进入 **`String[]` 数组字面量**，
-再把数组整个传给 `Runtime.exec` 的实参：
+**形态 100% 统一**（37/37）：用户输入经各种变换进入 `Runtime.exec` 的**实参**，
+且调用里几乎都带 `new java.io.File(System.getProperty("user.dir"))`（工作目录实参）：
 
 ```java
 String bar = ...;                       // ← 用户输入（cookie/header/param 中转）
-String[] args = {cmd};
-String[] argsEnv = {bar};               // ← taint 进数组元素
+String[] args = {cmd};                  // Form A/D：taint 在 argsEnv，位置 1
+String[] argsEnv = {bar};
 Runtime r = Runtime.getRuntime();
-Process p = r.exec(args, argsEnv, ...); // ← sink
+Process p = r.exec(args, argsEnv, new java.io.File(System.getProperty("user.dir")));
 ```
 
-**根因**：sink 规则匹配没问题（`ProcessBuilder(` / `Runtime.exec(` 都在），但
-**数组字面量 `{bar}` 的元素 → 数组 → exec 调用实参** 的 taint 传播没有桥接，
-污染死在 `{bar}` 里。
+按 taint 落点分三类：**位置 1 envp**（`argsEnv = {bar}`，15 例）／**位置 0 数组元素**
+（`args = {a1, a2, cmd, bar}`，11 例）／**位置 0 字符串拼接**（`r.exec(cmd + bar, …)`，11 例）。
 
-**证据**：最小复现 `param → String[] argsEnv = {param} → r.exec(args, argsEnv)` →
-**0 findings**；把 `{param}` 改成直接 `r.exec(param)` 即可检出。
+**根因（两因叠加，图级实证，非数组断链）**：
+1. **source 优先于 sink 误吞**：`System.getProperty(` 命中了 `command_injection`
+   source 规则，而它恰好出现在 sink 调用内部（工作目录实参）。`_label_taint_nodes`
+   的「节点不可能同时是 source 和 sink」逻辑把整个 `exec` 调用点标成 source、
+   不再评估 sink → BFS 永远找不到 sink。**22 例（位置 0 两组）全因此漏报**。
+2. **位置门控**：`command_injection` 曾在 `_SINK_STR_TEMPLATE_CATS` 里被门控——
+   taint 位于实参位置 ≥1 判为「绑定非注入」跳过。envp 位置的 taint 被丢掉。
+   **15 例（envp 组）全因此漏报**。
 
-**修复**：漏报面 A 类（数组/容器状态写读）扩展 —— 数组字面量初始化
-`T[] x = {a, b}` 应把元素 taint 并入数组；同时 `exec` 的**任一实参**携带 taint
-即应触发（含 envp 位置）。注意与「危险参数位置门控」的平衡：cmdi 没有 sqli 那种
-「第 1 个实参才是攻击面」的语义，envp 位置 taint 在 OWASP 里也算脆弱。
+> 之前误判根因为「数组字面量 `{bar}` 元素 → 数组 taint 传播断裂」，图 dump 实证
+> 该桥接**已存在**（`vari(param)→assi(argsEnv)→vari(argsEnv)→call(exec)` 全齐），
+> 特此更正。
+
+**修复**（两处，均过最小用例 + 全量回归）：
+1. `analyzer.py`：把 `command_injection` 从 `_SINK_STR_TEMPLATE_CATS`（位置门控表）
+   移除——命令执行类 sink 的**任一实参**携带 taint 都算命中（含 envp；OWASP cmdi
+   语义里 envp 是真实攻击面）。
+2. `taint_rules.yaml`（BUG 45）：java `command_injection` sources 移除
+   `System.getProperty(`——它是 JVM 部署配置、非逐请求用户输入，作为 source 会在
+   sink 调用内部命中、反手吞掉 sink 标签。需要「配置/环境输入」语义时另走 P2
+   配置类漏洞专项。
+
+**回归结果（对比 pathtraver 修复后基线，全量 2740 用例）**：
+- **cmdi：TP 89→126、FN 37→0、TPR 70.6%→100%**；
+- **其余 10 类 TP/FN 全零丢失**（铁律满足，demo-java 7→7 亦零丢失）；
+- **代价：cmdi FP 87→125（+38），FPR 69.6%→100%**。新 FP = 19 例 envp 带 taint
+  的安全用例（与脆弱用例同构，无静态可区分）+ 19 例位置 0 分支不敏感/集合取值
+  过近似（如 00177 常量分支恒真、00171 常量 map 取值）。均属流可达性过近似
+  类（与 pathtraver/trustbound/xss 的 100% FPR 同类），无便宜规则级收窄——
+  需分支敏感（P2/P3）。TOTAL TPR 92.7%→95.3%。
 
 **FN 用例（37）**：00172, 00176, 00304, 00306, 00311, 00409, 00498, 00500, 00575,
 00576, 00824, 00825, 00981, 01288, 01362, 01446, 01533, 01609, 01610, 01938,
@@ -271,14 +293,14 @@ sink 规则覆盖（`evaluate(`），但 `expression ← param` 的传播在某�
 | 优先级 | 项 | FN 影响 | 工作量/风险 |
 |---|---|---|---|
 | ~~P0~~ ✅ | pathtraver 追加 FQN sink 模式 | 40 | **已修**（TPR 66.2→96.2，FN 143→103；FP 代价见 §2.1） |
-| P1 | cmdi 数组字面量 taint 桥接（37 FN） | 37 | 中，涉及图构建；注意 envp 位置判定 |
+| ~~P1~~ ✅ | cmdi：System.getProperty source 误吞 sink + envp 位置门控 | 37 | **已修**（TPR 70.6→100，FN 103→66；FP 代价见 §3） |
 | P1 | sqli 调用侧实参桥接（10 FN） | 10 | 中，需按 A/B 方法定位图构建细节 |
 | P2 | crypto 硬编码弱算法精确 pattern 类别（6 FN） | 6 | 中，受 crypto_weakness 红线约束需新类别 |
 | P2 | pathtraver/xpathi 残余流断裂（6 FN） | 6 | 需逐例定位 |
 | — | hash(40) / crypto(4) 配置驱动 | 44 | 固有，等配置解析能力（P2 路线图） |
 
-> 合计可修 59（P0 已修 40），固有 44。当前 TPR **92.7%**（1312/1415）；修完剩余
-> 可修项后理论 TPR ≈ 96.9%（1312+59 → 1371/1415）。
+> 合计可修 22（P0 40 + P1 cmdi 37 已修），固有 44。当前 TPR **95.3%**（1349/1415）；
+> 修完剩余可修项后理论 TPR ≈ 96.9%（1349+22 → 1371/1415）。
 >
 > **铁律提醒**：上述任何收窄/桥接改动落地前，必须先在 vfa / flask-xss / vampi /
 > demo-java 四基准 + OWASP 分块回归上证明「原有命中一条不少」。

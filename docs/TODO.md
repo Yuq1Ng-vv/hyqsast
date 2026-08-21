@@ -18,8 +18,11 @@
   参数名匹配（high）→ 位置匹配（medium）→ 全连接兜底（low），边带
   `confidence` 属性。后续可用它做加权 BFS / 低置信边过滤。
 - **P1-4 sink 危险参数位置门控**（`analyzer.py`，`_SINK_STR_TEMPLATE_CATS`）
-  字符串模板型注入（sql/command/code/xpath/ssti）只认首参为危险载荷；
-  污点在绑定参数位（`query(sql, tainted_param)`）不算命中，消参数绑定误报。
+  字符串模板型注入（sql/code/xpath/ssti）只认首参为危险载荷；污点在绑定参数位
+  （`query(sql, tainted_param)`）不算命中，消参数绑定误报。**例外**：
+  `command_injection` 于 2026-08-21 移出门控——命令执行类 sink（`Runtime.exec`）
+  的 envp（第 2 实参）在 OWASP cmdi 语义里是真实攻击面（15/37 FN 经此位置），
+  任一实参携带 taint 都算命中（见 `docs/OWASP漏报清单.md` §3）。
 - **P1-5 多类别聚合**（`Finding.related_categories` + `_aggregate_multi_category`）
   相同 (source, sink) 的多类别候选合并为一条主 finding；主类别按严重级别、
   sink 模式特异性（最长匹配模式）裁定。ureport2 cap=500 下 (src,sink) 路径
@@ -31,6 +34,12 @@
   「对宿主内部状态写」，从写调用点连 DATA_FLOW 边到同函数内该宿主所有 var_ref，
   读侧复用 RHS→LHS / var_ref→call_site 桥接。demo ⑥ 容器与 Builder 形态
   实测接住。
+- **cmdi 全量修复**（P1，`analyzer.py::_SINK_STR_TEMPLATE_CATS` 移除
+  `command_injection` + `taint_rules.yaml` java sources 移除 `System.getProperty(`，
+  BUG 45）：OWASP cmdi TPR 70.6%→**100%**（FN 37→0，含 envp 位置 15 例 +
+  位置 0 两组 22 例），其余 10 类 + demo-java 全零丢失；代价 cmdi FP 87→125
+  （FPR 69.6%→100%，均为流可达性过近似，与 pathtraver/trustbound/xss 同类，
+  靠人工复核消化，分支敏感列入 P3）。
 - **数组下标归一化收尾**（`languages/java.py::_container_host` +
   `languages/python.py::_container_host`，漏报面 A 类剩余）：简单
   `a[0] = t; sink(a[0])` 早在容器桥接提交就归一化到宿主 `a`；本批把**残留

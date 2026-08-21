@@ -63,7 +63,10 @@ _DEFAULT_MAX_FINDINGS_PER_CATEGORY = 50
 _SINK_STR_TEMPLATE_CATS: frozenset[str] = frozenset(
     {
         "sql_injection",
-        "command_injection",
+        # 门控前提「命令串只出现在第一个实参」对 ``Runtime.exec(args, envp)``
+        # 不成立：envp（第 2 实参）在 OWASP cmdi 语义里是真实攻击面（37 个
+        # cmdi FN 全经 envp 位置进 sink）。命令执行类 sink 的任一实参携带
+        # taint 都算命中，故不做位置门控（见 docs/OWASP漏报清单.md §3）。
         "code_injection",
         "xpath_injection",
         "ssti",
