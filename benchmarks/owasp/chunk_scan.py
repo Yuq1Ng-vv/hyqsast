@@ -34,7 +34,13 @@ def _collect_files() -> list[Path]:
     return sorted(p for p in TESTCODE.rglob("*.java") if p.is_file())
 
 
-def scan_chunks(files: list[Path], out_dir: Path, n_chunks: int, max_findings: int) -> list[Path]:
+def scan_chunks(
+    files: list[Path],
+    out_dir: Path,
+    n_chunks: int,
+    max_findings: int,
+    extra_args: list[str] | None = None,
+) -> list[Path]:
     """按 *files* 切成 *n_chunks* 个连续块，每块一个子进程扫描。
 
     每块在 ``out_dir/parts/part_NNN/`` 下放 symlink 目录（避免复制 2740 个文件），
@@ -70,6 +76,7 @@ def scan_chunks(files: list[Path], out_dir: Path, n_chunks: int, max_findings: i
             "--max-findings",
             str(max_findings),
             "--no-cache",
+            *list(extra_args or []),
             "-o",
             str(report),
         ]
@@ -129,6 +136,16 @@ def main() -> None:
     ap.add_argument("--label", default="owasp-chunked", help="结果归档目录名（results/<label>/）")
     ap.add_argument("--scan-only", action="store_true", help="只分块扫描 + 合并，不评分")
     ap.add_argument("--merge-only", nargs="?", const=True, metavar="OUT", help="只合并已有块报告")
+    ap.add_argument(
+        "--enable-container-bridge",
+        action="store_true",
+        help="透传给 hyqsast：开容器写桥接（OWASP 桥接开/关对比用）",
+    )
+    ap.add_argument(
+        "--enable-state-bridge",
+        action="store_true",
+        help="透传给 hyqsast：开跨函数状态桥接（OWASP 桥接开/关对比用）",
+    )
     args = ap.parse_args()
 
     out_dir = RESULTS / args.label
@@ -153,7 +170,12 @@ def main() -> None:
 
     files = _collect_files()
     print(f"[chunk_scan] {len(files)} 文件 / {args.chunks} 块 -> {out_dir}")
-    reports = scan_chunks(files, out_dir, args.chunks, args.max_findings)
+    extra_args = []
+    if args.enable_container_bridge:
+        extra_args.append("--enable-container-bridge")
+    if args.enable_state_bridge:
+        extra_args.append("--enable-state-bridge")
+    reports = scan_chunks(files, out_dir, args.chunks, args.max_findings, extra_args)
     merged_json = out_dir / "owasp-merged.json"
     merge(reports, merged_json)
     if not args.scan_only:

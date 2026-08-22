@@ -46,6 +46,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-blind-spots", action="store_true", help="不输出盲区清单")
     parser.add_argument("--no-cache", action="store_true", help="强制重建 CPG 图，忽略缓存")
+    parser.add_argument(
+        "--enable-container-bridge",
+        action="store_true",
+        help="开启容器/Builder 状态写读桥接启发式（默认关；高召回漏报面场景才开）",
+    )
+    parser.add_argument(
+        "--enable-state-bridge",
+        action="store_true",
+        help="开启跨函数状态桥接启发式（默认关；高召回漏报面场景才开）",
+    )
     args = parser.parse_args(argv)
 
     # 自动发现：cwd 下存在 rules/ 目录则默认加载（--rules 显式指定时优先生效）
@@ -64,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         include_blind_spots=not args.no_blind_spots,
         use_cache=not args.no_cache,
         rules_paths=rules_paths,
+        enable_container_bridge=args.enable_container_bridge,
+        enable_state_bridge=args.enable_state_bridge,
     )
 
     s = result.summary

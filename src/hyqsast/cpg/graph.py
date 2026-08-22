@@ -341,7 +341,16 @@ class CPGGraphBuilder:
         self,
         parser: Parser,
         taint_loader: TaintRuleLoader | None = None,
+        *,
+        enable_container_bridge: bool = False,
+        enable_state_bridge: bool = False,
     ) -> None:
+        # BUG 55: 两个过近似桥接默认为关（真项目 383 文件测出 800k finding，
+        # 定位容器写桥接 + 跨函数状态桥接为主凶）。需要高召回的漏报面场景可
+        # 从代码层显式开启（scan(enable_container_bridge=True) 等）。
+        # 铁律提示：默认关会牺牲这两类桥接本要补的 FN，见 OWASP 回归对比表。
+        self._enable_container_bridge = enable_container_bridge
+        self._enable_state_bridge = enable_state_bridge
         self._parser = parser
         self.graph = nx.MultiDiGraph()
         self._call_graph_builder: CallGraphBuilder | None = None
@@ -655,7 +664,9 @@ class CPGGraphBuilder:
         # `sb.append(payload); s = sb.toString();` — the write call's taint
         # must reach the host variable's var-refs so the read side reuses
         # the existing RHS→LHS / var_ref→call_site bridges.
-        self._add_container_state_edges(path, language)
+        # BUG 55: 过近似启发式，默认关（scan(enable_container_bridge=True) 开启）。
+        if self._enable_container_bridge:
+            self._add_container_state_edges(path, language)
 
         # 4.55 — Connect NODE_PARAMETER → NODE_ASSIGNMENT for the same
         # (enclosing_function, var_name).  Phase 1.5 of build_def_use_chains
@@ -720,6 +731,10 @@ class CPGGraphBuilder:
         # 不得复用旧图；改引擎结构边（def-use/容器桥接）靠 bump 版本号。
         cache_lang = ",".join(self._parser.configured_languages)
         cache_rules = self._taint_loader.fingerprint() if self._taint_loader is not None else ""
+        # BUG 55: 桥接开关拼进缓存 key —— 开/关切换时结构边不同，不得复用旧图。
+        cache_rules += (
+            f"|cb={int(self._enable_container_bridge)}:sb={int(self._enable_state_bridge)}"
+        )
         cache_path = self._cache_path_for(root, cache_lang, cache_rules)
 
         # ── Try cache ──────────────────────────────────────────────────
@@ -795,9 +810,7 @@ class CPGGraphBuilder:
         for edge in cross_edges:
             # BUG 53: 优先用可达文件集里的第一个做 CALLS 边目标（与 build_calls
             # 的解析一致）；旧路径退回收敛的 find_definition。
-            target_file = (
-                edge.resolved_files[0] if edge.resolved_files else None
-            )
+            target_file = edge.resolved_files[0] if edge.resolved_files else None
             if target_file is None:
                 target_file = self._call_graph_builder.find_definition(edge.callee)
             caller_fid = _uid(NODE_FUNCTION, edge.file_path, edge.caller)
@@ -834,9 +847,7 @@ class CPGGraphBuilder:
                     self.graph.nodes[cid]["is_resolved"] = True
                     self.graph.nodes[cid]["cross_file"] = True
                     if edge.resolved_files:
-                        self.graph.nodes[cid]["callee_files"] = list(
-                            edge.resolved_files
-                        )
+                        self.graph.nodes[cid]["callee_files"] = list(edge.resolved_files)
                 self.graph.add_edge(caller_fid, cid, edge_type=EDGE_CALLS)
                 self.graph.add_edge(cid, callee_fid, edge_type=EDGE_CALLS)
 
@@ -853,7 +864,9 @@ class CPGGraphBuilder:
 
         # 5b — 跨函数状态桥接（漏报面 J 类）：全局/静态/实例字段一处写、
         # 另一处读。必须在全部文件入图后全图执行。
-        self._add_state_bridge()
+        # BUG 55: 全图稠密连边启发式，默认关（scan(enable_state_bridge=True) 开启）。
+        if self._enable_state_bridge:
+            self._add_state_bridge()
 
         # ── Save to cache ──────────────────────────────────────────────
         if use_cache:

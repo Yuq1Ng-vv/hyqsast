@@ -97,6 +97,9 @@ class Analyzer:
         use_cache: bool = True,
         severity_overrides: dict[str, str] | None = None,
         rules_paths: str | Path | list[str | Path] | None = None,
+        *,
+        enable_container_bridge: bool = False,
+        enable_state_bridge: bool = False,
     ) -> None:
         self.directory = Path(directory).resolve()
         if not self.directory.is_dir():
@@ -108,12 +111,21 @@ class Analyzer:
         self.include_blind_spots = include_blind_spots
         self.use_cache = use_cache
         self.severity_overrides = severity_overrides or {}
+        # BUG 55: 两个过近似桥接默认关（真项目 800k finding 主凶）；高召回
+        # 场景显式开启。见 CPGGraphBuilder.__init__ 注释与 OWASP 回归对比。
+        self.enable_container_bridge = enable_container_bridge
+        self.enable_state_bridge = enable_state_bridge
 
         self.parser = Parser(languages=[self.language])
         # rules_paths=None 时用内置 taint_rules.yaml；传入文件/目录则在
         # 内置规则之上追加合并（见 TaintRuleLoader 的 merge 语义）
         self.taint_loader = TaintRuleLoader(rules_paths=rules_paths)
-        self.graph_builder = CPGGraphBuilder(self.parser, taint_loader=self.taint_loader)
+        self.graph_builder = CPGGraphBuilder(
+            self.parser,
+            taint_loader=self.taint_loader,
+            enable_container_bridge=enable_container_bridge,
+            enable_state_bridge=enable_state_bridge,
+        )
         # 报告层读源码的按文件缓存（兜底 code / 提取整函数源码）
         self._src = _SourceCache()
         # P0-2: 被 max_findings_per_category 截断的类别计数（_build_findings 填充）
@@ -288,9 +300,7 @@ class Analyzer:
         if skipped:
             for cat, n in skipped.items():
                 self._truncated_categories[cat] = self._truncated_categories.get(cat, 0) + n
-        self._truncated_categories = {
-            k: v for k, v in self._truncated_categories.items() if v > 0
-        }
+        self._truncated_categories = {k: v for k, v in self._truncated_categories.items() if v > 0}
         return findings
 
     def _pattern_findings(

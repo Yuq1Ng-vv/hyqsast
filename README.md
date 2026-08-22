@@ -67,12 +67,41 @@ result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.
 - 模板与 CodeQL 适配契约见 `examples/rules/`（`example.rules.yaml` + `README.md`）；
   你的适配规则放仓库根目录 `rules/`（自动加载，契约见 `rules/README.md`）。
 
+## 过近似桥接启发式开关（BUG 55）
+
+两个为补漏报面加的过近似桥接默认**关**（真项目曾因它们测出几十万 finding）：
+
+- **容器写桥接**（`sb.append(t); s = sb.toString()` 这类对象内部状态写读）
+- **跨函数状态桥接**（模块全局 / static / 实例字段一处写、另一处读）
+
+需要高召回、愿意接受这两类桥接引入的误报时，从代码层或 CLI 显式开启：
+
+```python
+result = scan(
+    "/path/to/project",
+    language="python",
+    enable_container_bridge=True,   # 容器/Builder 状态写读桥接
+    enable_state_bridge=True,       # 跨函数状态桥接
+)
+```
+
+```bash
+uv run hyqsast /path/to/project --language python \
+    --enable-container-bridge --enable-state-bridge
+```
+
+桥接开关拼进 CPG 图缓存 key，开/关切换不会复用旧图。**代价如实说明**（OWASP
+2026-08-22 实测，开→关）：TP 1375→1365（-10：cmdi -4 / sqli -5 / pathtraver -1），
+FN 40→50，TPR 97.2%→96.5%；findings 30595→24571（-19.7%）。默认关是有意权衡：
+真项目可用性优先，代价是这两类桥接补的 A/J 类漏报面召回缩水。全量对比见
+`benchmarks/owasp/results/2026-08-22-bug55-bridges-off/score.txt`。
+
 ## 结果结构（`ScanResult`）
 
 ```jsonc
 {
   "summary": { "files": 0, "functions": 0, "endpoints": 0,
-               "findings": 0, "sinks": 0, "blind_spots": 0 },
+               "findings": 0, "sources": 0, "sinks": 0, "blind_spots": 0 },
   "endpoints": [
     { "route": "/api/users/{id}", "methods": ["GET"],
       "handler_func": "getUser", "file_path": "...", "line": 12,

@@ -26,6 +26,9 @@ def scan(
     use_cache: bool = True,
     severity_overrides: dict[str, str] | None = None,
     rules_paths: str | Path | list[str | Path] | None = None,
+    *,
+    enable_container_bridge: bool = False,
+    enable_state_bridge: bool = False,
 ) -> ScanResult:
     """扫描一个源码目录，返回接口 / 漏洞类型 / 调用链的结构化结果。
 
@@ -39,6 +42,12 @@ def scan(
         severity_overrides: 覆盖默认的 vuln_type → severity 映射。
         rules_paths: 额外规则文件（或目录，自动 glob ``*.yaml``）。在内置
             ``taint_rules.yaml`` 之上按 ``(语言, 区块, 类别)`` 追加去重合并。
+        enable_container_bridge: 开启「容器/Builder 状态写读桥接」启发式
+            （默认关）。这是过近似：``sb.append(t); s = sb.toString()`` 这类
+            链它才有边。默认关会牺牲该类别漏报面（A 类）的部分召回，见
+            OWASP 开/关回归对比。
+        enable_state_bridge: 开启「跨函数状态桥接」启发式（默认关）。默认关
+            会牺牲漏报面 J 类（模块全局/静态/实例字段跨函数写读）的召回。
 
     Returns:
         :class:`ScanResult`，可用 ``.to_json(path)`` 落盘。
@@ -52,4 +61,6 @@ def scan(
         use_cache=use_cache,
         severity_overrides=severity_overrides,
         rules_paths=rules_paths,
+        enable_container_bridge=enable_container_bridge,
+        enable_state_bridge=enable_state_bridge,
     ).run()

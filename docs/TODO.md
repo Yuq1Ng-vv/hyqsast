@@ -33,7 +33,8 @@
   漏报面 A 类）：`host.put(k,t)` / `host.append(t)` / `host.setXxx(t)` 识别为
   「对宿主内部状态写」，从写调用点连 DATA_FLOW 边到同函数内该宿主所有 var_ref，
   读侧复用 RHS→LHS / var_ref→call_site 桥接。demo ⑥ 容器与 Builder 形态
-  实测接住。
+  实测接住。**BUG 55（2026-08-22）：真项目 800k finding 主凶，默认关**，
+  代码层/CLI `enable_container_bridge` 显式开启（README「过近似桥接启发式开关」）。
 - **cmdi 全量修复**（P1，`analyzer.py::_SINK_STR_TEMPLATE_CATS` 移除
   `command_injection` + `taint_rules.yaml` java sources 移除 `System.getProperty(`，
   BUG 45）：OWASP cmdi TPR 70.6%→**100%**（FN 37→0，含 envp 位置 15 例 +
@@ -59,6 +60,8 @@
   各语言 `collect_state_slots`，漏报面 J 类）：模块全局 / static 字段 /
   `this`/`self` 实例字段的跨函数写→读连通；`this`/`self` 按类收敛避免跨类
   串扰。静态字段 / 静态容器 / 模块全局 / 实例字段探针全部实测命中。
+  **BUG 55（2026-08-22）：真项目 800k finding 主凶，默认关**，代码层/CLI
+  `enable_state_bridge` 显式开启。
 - **sink 遮蔽修复**（`analyzer.py::_bfs_to_sink` record-and-continue，
   漏报面 K 类）：BFS 命中 sink 后**记录路径并继续扩张**，不再让中间被过宽规则
   误标成 sink 的节点遮蔽下游真 sink（如 `String s = foo.build(p)` 遮蔽
