@@ -57,9 +57,21 @@ weakrand = `Random()` / `Math.random()`；securecookie = `Cookie.setSecure(false
   （spring/jaxrs）认不出 `@WebServlet` servlet，但 taint 分析不依赖端点提取，
   finding 照常产出（`endpoints` 为空不影响评分）。
 - **内存注意（2026-08-20 实测）**：2766 文件全量单进程建图在 1.6GiB 内存的
-  机器上会 **OOM 被杀**（跨文件调用图是内存大头）。修复方向：分块扫描 ——
-  每块 ~400 文件一个进程、内存有界，再合并 findings 评分（每个测试用例
-  自包含，跨块边不需要）。分块支持尚未落地，见 TODO。
+  机器上会 **OOM 被杀**（跨文件调用图是内存大头）。**必须分块扫描**（每块一个
+  进程、内存有界，再合并 findings 评分；每个测试用例自包含，跨块边不影响逐用例
+  评分）。分块工具已固化：
+
+  ```bash
+  # 分块扫描 + 合并 + 评分（默认 10 块，size 274）
+  uv run python benchmarks/owasp/chunk_scan.py --label <date>-<label>
+
+  # 两份报告逐条 A/B 指纹比较（缺陷平衡铁律验证）
+  uv run python benchmarks/owasp/compare_findings.py <基线> <候选>
+  ```
+
+  ⚠️ **分块边界口径**：块边界不同会切掉/保留不同的「跨文件全连接兜底」伪跨文件
+  finding，导致 findings 总数 / cross 在**不同分块布局之间不可直接比**（评分逐
+  测试不受影响）。跨轮逐条 A/B 必须同一分块布局。
 - 源码 `request.getParameter(...)` 等已被 java source 规则覆盖，框架提取器
   （spring/jaxrs）认不出 `@WebServlet` servlet，但 taint 分析不依赖端点提取，
   finding 照常产出（`endpoints` 为空不影响评分）。

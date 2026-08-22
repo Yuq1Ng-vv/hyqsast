@@ -9,6 +9,7 @@ See DESIGN-IMPLEMENTATION.md Section 2.4 for the interface specification.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -95,12 +96,26 @@ class DataFlowBuilder:
 
         traverser = Traverser(tree)
 
+        # BUG 51 (性能): 用 body 子树遍历替代「全树遍历 + 字节区间过滤」——每
+        # 函数从两遍整文件树遍历降为两遍 body 子树（单文件 O(F²)→O(F)）。
+        # tree-sitter 节点区间互不重叠，body 字节区间内的节点必为其结构后代，
+        # 干净文件（无语法错误）下两者完全等价（已对 6 类含错 Java 实证，差异
+        # 仅限匿名括号节点，不影响 def-use 采集）。
+        # 含语法错误（ERROR/MISSING）时回退全树 + 字节区间过滤，与历史行为逐
+        # 字节一致 → 无条件零 FN 风险。``root_node.has_error`` 是 parse 后缓存
+        # 标志，实测 ~0.0001ms/次，成本可忽略。
+        def _body_nodes() -> Iterator[Node]:
+            if tree.root_node.has_error:
+                for n in traverser.traverse():
+                    if self._node_in_range(n, body):
+                        yield n
+            else:
+                yield from traverser.traverse(root=body)
+
         # Phase 1 — collect assignment targets within the function body
         # _Assign: (var_name, def_node, def_source, def_line)
         assignments: list[_Assign] = []
-        for node in traverser.traverse():
-            if not self._node_in_range(node, body):
-                continue
+        for node in _body_nodes():
             if node.type in assign_types:
                 target = provider.extract_assignment_target(node)
                 if target:
@@ -138,9 +153,7 @@ class DataFlowBuilder:
         # Phase 2 — single pass: collect all variable uses, then associate with defs
         # Build a map from var_name → list of use locations in one tree traversal
         var_uses: dict[str, list[str]] = {}
-        for node in traverser.traverse():
-            if not self._node_in_range(node, body):
-                continue
+        for node in _body_nodes():
             # Java 的 ``this`` 是独立节点类型（非 identifier）：``this.buf`` /
             # ``this.method()`` 里的实例引用同样参与 def-use（漏报面 A 类
             # 字段状态写读：``this.buf = t; sink(this.buf)``）。

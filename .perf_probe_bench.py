@@ -3,13 +3,13 @@
 用法: uv run python .perf_probe_bench.py perf_probes/perfprobe2 [--defuse]
 基线（旧代码 O(F×G)）：
   perfprobe2 单文件 500 方法 → add_file 115.5s（rhs 44.3 + vrc 45.2 + def-use 23.8）
-  perfprobe4 200 文件 source 密集 → add_directory 69.1s（rhs 20.0 + vrc 18.8 + cont 8.4 + def-use 6.2）
+  perfprobe4 200 文件 source 密集 → add_directory 69.1s（rhs 20.0 + vrc 18.8
+    + cont 8.4 + def-use 6.2）
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 
 from hyqsast.cpg.graph import CPGGraphBuilder
@@ -30,7 +30,7 @@ def main() -> None:
     counts: dict[str, int] = {}
     totals: dict[str, float] = {}
 
-    def wrap(name: str) -> object:
+    def wrap(name: str) -> None:
         fn = getattr(builder, name)
         counts[name] = 0
         totals[name] = 0.0
@@ -42,7 +42,9 @@ def main() -> None:
             counts[name] += 1
             return r
 
-        return w
+        # 关键：必须把 wrapper 真正写回实例属性，否则返回的 w 被丢弃、
+        # 计时器从未生效（此前边函数/ add_file 的耗时都归不了因）。
+        setattr(builder, name, w)
 
     wrap("add_file")
     wrap("_add_rhs_to_lhs_edges")

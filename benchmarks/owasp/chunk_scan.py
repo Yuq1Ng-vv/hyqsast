@@ -1,0 +1,165 @@
+"""benchmarks/owasp/chunk_scan.py — OWASP 分块扫描 + 合并（内存有界回归入口）。
+
+2766 文件单进程建图在本机（~1.6GiB RAM）会 OOM——跨文件调用图是内存大头
+（见 README「内存注意」）。本脚本把 testcode 文件按名字排序切成 ``--chunks``
+个连续块，每块一个子进程跑 hyqsast（内存有界），再合并 findings 评分。OWASP
+每个测试用例自包含，跨块边不影响逐用例评分，且与全量扫描 A/B 零差异（已实证，
+见 results/2026-08-22-perf-p01-p02）。
+
+用法::
+
+    uv run python benchmarks/owasp/chunk_scan.py                      # 10 块 + 合并 + 评分
+    uv run python benchmarks/owasp/chunk_scan.py --chunks 8 --label my-round
+    uv run python benchmarks/owasp/chunk_scan.py --scan-only          # 只扫不评分
+    uv run python benchmarks/owasp/chunk_scan.py --merge-only <out>   # 只合并已有块报告
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BENCH_DIR = Path(os.environ.get("OWASP_BENCH_DIR", "/root/benchmarks/owasp-benchmark"))
+TESTCODE = BENCH_DIR / "src/main/java/org/owasp/benchmark/testcode"
+EXPECTED = BENCH_DIR / "expectedresults-1.2.csv"
+RESULTS = REPO_ROOT / "benchmarks/owasp/results"
+
+
+def _collect_files() -> list[Path]:
+    return sorted(p for p in TESTCODE.rglob("*.java") if p.is_file())
+
+
+def scan_chunks(files: list[Path], out_dir: Path, n_chunks: int, max_findings: int) -> list[Path]:
+    """按 *files* 切成 *n_chunks* 个连续块，每块一个子进程扫描。
+
+    每块在 ``out_dir/parts/part_NNN/`` 下放 symlink 目录（避免复制 2740 个文件），
+    报告写到 ``out_dir/parts/report_chunk_NNN.json``。返回各块报告路径。
+    """
+    parts_dir = out_dir / "parts"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    size = max(1, (len(files) + n_chunks - 1) // n_chunks)
+    reports: list[Path] = []
+
+    hyqsast_bin = Path(sys.executable).parent / "hyqsast"
+    if not hyqsast_bin.exists():
+        hyqsast_bin = "hyqsast"
+
+    for i in range(0, len(files), size):
+        chunk = files[i : i + size]
+        part_dir = parts_dir / f"part_{i // size:03d}"
+        part_dir.mkdir(exist_ok=True)
+        for f in chunk:
+            link = part_dir / f.name
+            if not link.exists():
+                os.symlink(f, link)
+        report = parts_dir / f"report_chunk_{i // size:03d}.json"
+        reports.append(report)
+        if report.exists():
+            print(f"  [chunk {i // size:03d}] {len(chunk)} 文件 -> {report.name}（已存在，跳过）")
+            continue
+        cmd = [
+            str(hyqsast_bin),
+            str(part_dir),
+            "--language",
+            "java",
+            "--max-findings",
+            str(max_findings),
+            "--no-cache",
+            "-o",
+            str(report),
+        ]
+        print(f"  [chunk {i // size:03d}] 扫描 {len(chunk)} 文件 ...")
+        subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+    return reports
+
+
+def merge(reports: list[Path], out_json: Path) -> dict:
+    """把各块报告的 findings / endpoints / blind_spots 合并进单报告。
+
+    分块扫描时跨块边被切掉，但 OWASP 每个测试用例自包含，逐用例评分不受影响。
+    summary 计数按块累加；块间不冲突（每块文件集不相交）。
+    """
+    merged: dict = {"summary": {}, "endpoints": [], "findings": [], "blind_spots": []}
+    for rep in reports:
+        with open(rep) as fh:
+            data = json.load(fh)
+        for key in ("summary",):
+            for k, v in data.get(key, {}).items():
+                if isinstance(v, int):
+                    merged["summary"][k] = merged["summary"].get(k, 0) + v
+        for key in ("endpoints", "findings", "blind_spots"):
+            merged[key].extend(data.get(key, []))
+    with open(out_json, "w") as fh:
+        json.dump(merged, fh, ensure_ascii=False)
+    print(
+        f"  合并完成：findings={len(merged['findings'])} endpoints={len(merged['endpoints'])}"
+        f" -> {out_json.name}"
+    )
+    return merged
+
+
+def score(report: Path, expected_csv: Path, score_txt: Path | None) -> None:
+    score_script = Path(__file__).with_name("score.py")
+    proc = subprocess.run(
+        [sys.executable, str(score_script), str(report), "--expected", str(expected_csv)],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    out = proc.stdout or proc.stderr
+    print(out)
+    if score_txt is not None:
+        score_txt.write_text(out)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="OWASP 分块扫描 + 合并 + 评分（内存有界）")
+    ap.add_argument("--chunks", type=int, default=10, help="分块数（默认 10）")
+    ap.add_argument(
+        "--max-findings",
+        type=int,
+        default=50000,
+        help="每类别最多 finding（防截断假 FN）",
+    )
+    ap.add_argument("--label", default="owasp-chunked", help="结果归档目录名（results/<label>/）")
+    ap.add_argument("--scan-only", action="store_true", help="只分块扫描 + 合并，不评分")
+    ap.add_argument("--merge-only", nargs="?", const=True, metavar="OUT", help="只合并已有块报告")
+    args = ap.parse_args()
+
+    out_dir = RESULTS / args.label
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.merge_only:
+        parts_dir = out_dir / "parts"
+        if isinstance(args.merge_only, str):
+            out_val = Path(args.merge_only)
+        else:
+            out_val = out_dir / "owasp-merged.json"
+        reports = sorted(parts_dir.glob("report_chunk_*.json")) if parts_dir.exists() else []
+        if not reports:
+            ap.error(f"{parts_dir} 下没有 report_chunk_*.json")
+        merge(reports, out_val)
+        return
+
+    if not TESTCODE.exists():
+        ap.error(f"找不到 OWASP testcode：{TESTCODE}（先跑 benchmarks/owasp/run.py 克隆）")
+    if not EXPECTED.exists():
+        ap.error(f"找不到 expectedresults：{EXPECTED}")
+
+    files = _collect_files()
+    print(f"[chunk_scan] {len(files)} 文件 / {args.chunks} 块 -> {out_dir}")
+    reports = scan_chunks(files, out_dir, args.chunks, args.max_findings)
+    merged_json = out_dir / "owasp-merged.json"
+    merge(reports, merged_json)
+    if not args.scan_only:
+        score(merged_json, EXPECTED, out_dir / "score.txt")
+        print(f"[chunk_scan] 评分已存档：{out_dir / 'score.txt'}")
+
+
+if __name__ == "__main__":
+    main()

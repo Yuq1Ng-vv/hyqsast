@@ -151,19 +151,31 @@
 >   函数、4.55 参数→赋值桥、`_label_taint_nodes` 全部从全图扫描收窄到本文件
 >   节点遍历；缓存恢复重建索引、跨文件 call-site 补登记。总工作量 O(F×G) →
 >   O(总节点数)。
-> - **P1-3 [待做，P0 落地后建图唯一剩余二次方]**：`build_def_use_chains`
->   （`dataflow.py:66`）每函数两次全树遍历（Phase 1 赋值 + Phase 2 用点）=
->   O(F²) 单文件内；改单趟遍历按函数分桶 / `traverse(root=body)`。
->   500 方法 def-use 23.8s → <2s。P0 后实测 perfprobe2 里 15.7s / 91% 耗时。
+> - **P1-3 [✅ 2026-08-22]**：`build_def_use_chains`（`dataflow.py`）Phase 1/2 由
+>   「全树遍历 + 字节区间过滤」改为 `_body_nodes()`：干净文件走 `traverse(root=body)`
+>   子树遍历（单文件 O(F²)→O(F)），含语法错误文件回退历史字节区间过滤（零 FN，
+>   因 tree-sitter ERROR 恢复可能把命名节点甩到 body 结构外，实证 6 类含错 Java
+>   无此形态，仍保留回退双保险）。BUG 51。500 方法 def-use **23.8s→0.055s**。
 > - **P2 预留**：修完建图若 BFS 仍慢（真实项目跨文件 CALLS 扩散），再按反向
 >   BFS / 同源合并处理（见下方 P3 性能条）。
 >
-> 验证（✅ 2026-08-22 完成）：OWASP 全量 2740 文件 / 30554 findings 逐条 A/B
-> 对比存档基线零差异，TOTAL TPR 97.2% / FPR 71.8% 与基线一致，demo-java 7
-> findings 一致（铁律通过）；500 方法单文件 **115.5s→17.2s（6.7×）**、200 文件
-> source 密集 **69.1s→5.9s（11.7×）**。存档
-> `benchmarks/owasp/results/2026-08-22-perf-p01-p02/`。探针生成器/插桩计时脚本
-> 在仓库根 `perf_gen_probes.py` / `perf_probe_bench.py`（gitignore）。
+> 验证（✅ 2026-08-22 完成）：P0-1/2 轮 OWASP 全量逐条 A/B 对比存档基线零差异，
+> TOTAL TPR 97.2% / FPR 71.8% 一致，demo-java 7 findings 一致（铁律通过）；
+> 500 方法单文件 **115.5s→17.2s（6.7×）**、200 文件 source 密集 **69.1s→5.9s（11.7×）**。
+> P1-3 轮（2026-08-22）：同分块布局下 **P1-3 前后逐条指纹零差异**（30634/30634，
+> 用 stash 还原对照 + `compare_findings.py`），评分与基线逐项相同 → P1-3 铁律通过；
+> def-use **15.7s→0.058s**（perfprobe2，~270×）、总建图 **17.2s→1.6s**；perfprobe4
+> 6.2s→0.268s、总 5.9s→4.8s。存档
+> `benchmarks/owasp/results/2026-08-22-perf-p01-p02/`（P0 轮）、
+> `benchmarks/owasp/results/2026-08-22-p13-defuse/`（P1-3 轮）+ 还原对照
+> `2026-08-22-p13-revert-ab/`。分块扫描/合并/A-B 工具已固化进 harness：
+> `benchmarks/owasp/chunk_scan.py` / `compare_findings.py`（README「分块尚未落地」
+> 空缺已补）。探针生成器/插桩计时脚本在仓库根 `perf_gen_probes.py` /
+> `perf_probe_bench.py`（gitignore）。
+>
+> 口径注记：P1-3 轮 findings 30634 vs 旧存档 30554（+80，cross +59）——**分块边界
+> 差异**所致（跨文件全连接兜底产生的伪跨文件 finding 集合随块边界变化），评分
+> 逐项零变化、P1-3 前后逐条零差异，P1-3 无贡献（详见 p13-defuse 归档 README）。
 
 ## P2（想起来了就做）
 
