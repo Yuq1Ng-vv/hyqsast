@@ -134,8 +134,50 @@
   `benchmarks/owasp/results/2026-08-21-crypto-pattern/`。逐例溯源见
   `docs/OWASP漏报清单.md` §5。可修 FN 至此全部清零。
 
+## P0/P1 性能：大项目建图 O(F×G) 卡死（2026-08-22 实测）
+
+> 真实项目 9879 java 文件 / 1,029,783 行跑一下午不完成，已停。完整分析见
+> `docs/性能分析-大项目卡死.md`。根因在**建图**，不是 BFS。
+> **主凶**：`graph.py:627/636/643` 三个边构建函数（`_add_rhs_to_lhs_edges` /
+> `_add_varref_to_callsite_edges` / `_add_container_state_edges`）缩进在
+> `for fn in funcs:` **循环体内**——每函数调用一次、每次遍历全图 → O(函数数 × 图规模)。
+> 单文件 500 方法实测 115.5s（rhs 44s + vrc 45s + def-use 24s）；200 文件 source 密集
+> 建图 69.1s（rhs/vrc/cs 各 3200 次全图扫描）。外推 9879 文件 F≈60k、G≈270 万 →
+> **800 亿次节点迭代 ≈ 11–22 小时**。
+>
+> - **P0-1 [✅ 2026-08-22]**：三个边构建函数移出 `for fn` 循环（12→8 空格缩进，
+>   每文件一次）。语义不变（内部已按 file_path 过滤），纯重构。
+> - **P0-2 [✅ 2026-08-22]**：新增 `_nodes_by_file` 文件索引（BUG 50），三个边
+>   函数、4.55 参数→赋值桥、`_label_taint_nodes` 全部从全图扫描收窄到本文件
+>   节点遍历；缓存恢复重建索引、跨文件 call-site 补登记。总工作量 O(F×G) →
+>   O(总节点数)。
+> - **P1-3 [待做，P0 落地后建图唯一剩余二次方]**：`build_def_use_chains`
+>   （`dataflow.py:66`）每函数两次全树遍历（Phase 1 赋值 + Phase 2 用点）=
+>   O(F²) 单文件内；改单趟遍历按函数分桶 / `traverse(root=body)`。
+>   500 方法 def-use 23.8s → <2s。P0 后实测 perfprobe2 里 15.7s / 91% 耗时。
+> - **P2 预留**：修完建图若 BFS 仍慢（真实项目跨文件 CALLS 扩散），再按反向
+>   BFS / 同源合并处理（见下方 P3 性能条）。
+>
+> 验证（✅ 2026-08-22 完成）：OWASP 全量 2740 文件 / 30554 findings 逐条 A/B
+> 对比存档基线零差异，TOTAL TPR 97.2% / FPR 71.8% 与基线一致，demo-java 7
+> findings 一致（铁律通过）；500 方法单文件 **115.5s→17.2s（6.7×）**、200 文件
+> source 密集 **69.1s→5.9s（11.7×）**。存档
+> `benchmarks/owasp/results/2026-08-22-perf-p01-p02/`。探针生成器/插桩计时脚本
+> 在仓库根 `perf_gen_probes.py` / `perf_probe_bench.py`（gitignore）。
+
 ## P2（想起来了就做）
 
+- **findings 复核去重工具 `dedup_findings.py`**（2026-08-21 用户建议，消费侧零
+  引擎风险）：全量扫描产出 30554 findings 无法逐条看——findings 是「候选池」
+  不是「漏洞清单」，先降维再复核。工具输入 full/canonical 报告，输出按
+  `(file_path, line, vuln_type)` 归并 sink 位置后的**复核清单**（TSV/JSON），
+  每个位置附：代表路径 1 条 + 命中 findings 计数 + 类别 + 严重级，按严重级倒序。
+  附带：①按 vuln_type / 按文件聚合的分布统计；②「已知误报模式」打标与过滤
+  （如 `encode 了还报 XSS`、`绑参了还报 SQL`——同一模式一次判定整类标记）；
+  ③对外交付只给 top N 详情 + 汇总表。**误报模式清单是后续 FP 治理（sanitizer
+  收窄、sink 位置精度）的直接输入**——一条模式 = 一个待修点。另：跑之前先用
+  `owasp-merged.json` 做一次 FP 普查（951 条按 类别×根因 归类成表），当收窄
+  基线，后面每轮对比 FPR 是否下降。A/B 验证只影响呈现不影响召回，无需铁律回归。
 - **字段敏感 / 对象属性级污点**：现在污点是「变量名级」，`obj.userInput` 和
   `obj.isAdmin` 都按变量 `obj` 传播。理想是按「敏感字段访问」传播
   （source 只进 `obj.userInput`，`obj.isAdmin` 不传播）。
@@ -156,8 +198,11 @@
   `/tmp/sanittest`（sanitizer 无关调用不吞 finding）、`/tmp/posittest`
   （绑定参数位门控 + 聚合）、`/tmp/dftest`（return 追踪）。覆盖规则加载 /
   def-use / 跨函数 / sanitizer / 聚合 / 位置门控。
-- **性能**：`_build_findings` 外层对每个 source 做 BFS，大型项目（几千函数）
-  是 O(源数 × 图遍历)；可做按 sink 反向 BFS 剪枝、同源合并、并行化。
+- **性能（BFS 阶段，建图修复后的下一步）**：`_build_findings` 外层对每个
+  source 做 BFS，大型项目（几千函数）是 O(源数 × 图遍历)；可做按 sink 反向
+  BFS 剪枝、同源合并、并行化。**注**：2026-08-22 实测建图阶段才是当前大项目
+  卡死主因（见上方 P0/P1 性能节），BFS 在 source 密集形态仅 0.1s；跨文件
+  CALLS 扩散后 BFS 才会成为下一个瓶颈。
 - **`taint_rules.yaml` 清洗**：内置规则混入了 CodeQL 风格模板模式（如
   `'String;I)I:2,4('`、`'(String $A)'`、`'List('`、`'Object('`、`'Query('`），
   子串匹配下制造噪音（`doQuery(` 命中 `Query(` 即一例）。需逐条评估删除，

@@ -352,6 +352,12 @@ class CPGGraphBuilder:
         self._cache_dir: Path | None = None
         # 跨函数状态槽（类字段 / 模块全局名），_add_state_bridge 建图末期填充
         self._state_slots: set[str] = set()
+        # BUG 50 (性能): 文件级节点索引 file_path → [node_id]。
+        # 三个边构建函数（_add_rhs_to_lhs_edges / _add_varref_to_callsite_edges /
+        # _add_container_state_edges）原来每函数调用时遍历全图节点再按 file_path
+        # 过滤 —— 大项目 O(F×G) 建图卡死。登记索引后这些函数只遍历本文件的
+        # 节点，总工作量降到 O(总节点数)。见 docs/性能分析-大项目卡死.md。
+        self._nodes_by_file: dict[str, list[str]] = {}
 
     # ── Cache helpers ────────────────────────────────────────────────────
 
@@ -450,6 +456,7 @@ class CPGGraphBuilder:
                 class_name=fn.class_name,
                 source=fn.source[:200],
             )
+            self._track_node(path, fid)
             func_nodes[key] = fid
             _func_start_lines[fn.name] = fn.start_line  # last-wins for bare-name lookups
 
@@ -469,6 +476,7 @@ class CPGGraphBuilder:
                     enclosing_function=fn.name,
                     param_index=pi,
                 )
+                self._track_node(path, pid)
                 # DATA_FLOW: function → parameter
                 self.graph.add_edge(fid, pid, edge_type=EDGE_DATA_FLOW)
 
@@ -536,6 +544,7 @@ class CPGGraphBuilder:
                 expression=edge.full_expression,
                 is_resolved=edge.is_resolved,
             )
+            self._track_node(path, cid)
             # Attach extracted call argument expressions for positional matching
             cargs = call_args_index.get((edge.call_line, edge.caller, edge.callee))
             if cargs:
@@ -595,6 +604,7 @@ class CPGGraphBuilder:
                     source=du.def_expression,
                     enclosing_function=fn.name,
                 )
+                self._track_node(path, aid)
                 # DATA_FLOW: function → assignment (the function contains this def)
                 self.graph.add_edge(fid, aid, edge_type=EDGE_DATA_FLOW)
 
@@ -612,35 +622,40 @@ class CPGGraphBuilder:
                         location=use_loc,
                         enclosing_function=fn.name,
                     )
+                    self._track_node(path, vid)
                     # DATA_FLOW: assignment → use, use → use (chain)
                     self.graph.add_edge(prev_node, vid, edge_type=EDGE_DATA_FLOW)
                     prev_node = vid
 
-            # 4.5 — RHS→LHS data-flow edges: connect variable uses in an
-            # assignment's right-hand side to the assignment itself.
-            #
-            # When `list = jdbc.queryForList(sql, map)` is executed, the
-            # values of `sql` and `map` flow INTO `list`.  Without this step
-            # the BFS can traverse the `sql` variable-ref chain all the way
-            # to line 235 but never "cross over" to the `list` assignment
-            # that is the actual sink.  This edge bridges that gap.
-            self._add_rhs_to_lhs_edges(path)
+        # 4.5 — RHS→LHS data-flow edges: connect variable uses in an
+        # assignment's right-hand side to the assignment itself.
+        #
+        # When `list = jdbc.queryForList(sql, map)` is executed, the
+        # values of `sql` and `map` flow INTO `list`.  Without this step
+        # the BFS can traverse the `sql` variable-ref chain all the way
+        # to line 235 but never "cross over" to the `list` assignment
+        # that is the actual sink.  This edge bridges that gap.
+        # BUG 50 (性能): 三个边构建函数本应按「文件」粒度执行一次，旧代码缩进
+        # 在 ``for fn in funcs:`` 循环体内导致每函数全图遍历一次（O(F×G) 二次方，
+        # 大项目建图卡死，见 docs/性能分析-大项目卡死.md）。内部均按 file_path
+        # 过滤节点，移到循环外每文件执行一次语义不变。
+        self._add_rhs_to_lhs_edges(path)
 
-            # 4.5b — variable_ref → call_site edges for bare-call sinks.
-            #
-            # `jdbcTemplate.query(sql)` is an expression statement, not an
-            # assignment, so step 4.5 never bridges its argument variable
-            # (`sql`) to the call_site node.  Without this edge a taint BFS
-            # from the argument's variable-ref dead-ends before reaching the
-            # call_site sink.  This edge bridges that gap.
-            self._add_varref_to_callsite_edges(path)
+        # 4.5b — variable_ref → call_site edges for bare-call sinks.
+        #
+        # `jdbcTemplate.query(sql)` is an expression statement, not an
+        # assignment, so step 4.5 never bridges its argument variable
+        # (`sql`) to the call_site node.  Without this edge a taint BFS
+        # from the argument's variable-ref dead-ends before reaching the
+        # call_site sink.  This edge bridges that gap.
+        self._add_varref_to_callsite_edges(path)
 
-            # 4.5c — container-state write→read bridging.
-            #
-            # `sb.append(payload); s = sb.toString();` — the write call's taint
-            # must reach the host variable's var-refs so the read side reuses
-            # the existing RHS→LHS / var_ref→call_site bridges.
-            self._add_container_state_edges(path, language)
+        # 4.5c — container-state write→read bridging.
+        #
+        # `sb.append(payload); s = sb.toString();` — the write call's taint
+        # must reach the host variable's var-refs so the read side reuses
+        # the existing RHS→LHS / var_ref→call_site bridges.
+        self._add_container_state_edges(path, language)
 
         # 4.55 — Connect NODE_PARAMETER → NODE_ASSIGNMENT for the same
         # (enclosing_function, var_name).  Phase 1.5 of build_def_use_chains
@@ -648,10 +663,12 @@ class CPGGraphBuilder:
         # but NODE_PARAMETER (created in step 1.5) has no outgoing edges to
         # them.  Without this bridge, cross-function taint edges (caller
         # var_ref → callee NODE_PARAMETER) lead to a dead end in BFS.
-        for nid, ndata in self.graph.nodes(data=True):
+        #
+        # BUG 50 (性能): 外层参数 × 内层赋值两层全图扫描同为 O(G×G) 隐患，
+        # 收窄到 ``_nodes_by_file`` 文件索引后 O(本文件参数 × 本文件赋值)。
+        for nid in self._file_node_ids(path):
+            ndata = self.graph.nodes[nid]
             if ndata.get("node_type") != NODE_PARAMETER:
-                continue
-            if ndata.get("file_path") != path:
                 continue
             pname = ndata.get("var_name", "")
             encl = ndata.get("enclosing_function", "")
@@ -662,10 +679,9 @@ class CPGGraphBuilder:
             # of the function body, i.e. smallest line number match).
             best_aid: str | None = None
             best_line: int = 999999
-            for aid, adata in self.graph.nodes(data=True):
+            for aid in self._file_node_ids(path):
+                adata = self.graph.nodes[aid]
                 if adata.get("node_type") != NODE_ASSIGNMENT:
-                    continue
-                if adata.get("file_path") != path:
                     continue
                 if adata.get("var_name") != pname:
                     continue
@@ -714,11 +730,17 @@ class CPGGraphBuilder:
                     cached_fp, graph_data = pickle.load(fh)
                 if cached_fp == fingerprint:
                     self.graph = graph_data
-                    self._indexed_files = {
-                        d.get("file_path", "")
-                        for _, d in self.graph.nodes(data=True)
-                        if d.get("file_path")
-                    }
+                    # BUG 50 (性能): 恢复时重建文件级节点索引 —— pickle 不带
+                    # ``_nodes_by_file``，若不重建，后续任何 add_file 都会拿到
+                    # 部分索引（丢旧节点的边）。单趟 O(G) 重建，远小于省下的
+                    # O(F×G)。与 ``_indexed_files`` 一趟完成。
+                    self._nodes_by_file = {}
+                    self._indexed_files = set()
+                    for nid, data in self.graph.nodes(data=True):
+                        fp = data.get("file_path", "")
+                        if fp:
+                            self._indexed_files.add(fp)
+                            self._nodes_by_file.setdefault(fp, []).append(nid)
                     # Re-label taint nodes when loader is present
                     # (cache was built without labels or with different rules)
                     if self._taint_loader is not None:
@@ -797,6 +819,10 @@ class CPGGraphBuilder:
                         is_resolved=True,
                         cross_file=True,
                     )
+                    # BUG 50 (性能): 跨文件 call-site 也登记进文件索引 —— 三个边
+                    # 构建函数在 add_file 阶段已跑完不会处理它，但登记使索引
+                    # 完整权威（缓存恢复重建时同样覆盖到）。
+                    self._track_node(edge.file_path, cid)
                 else:
                     self.graph.nodes[cid]["is_resolved"] = True
                     self.graph.nodes[cid]["cross_file"] = True
@@ -1064,6 +1090,32 @@ class CPGGraphBuilder:
                     ctrl_type=edge.kind,
                 )
 
+    def _track_node(self, file_path: str, nid: str) -> None:
+        """登记 *nid* 到 *file_path* 的文件级节点索引（BUG 50 性能）。
+
+        每次 ``self.graph.add_node`` 后调用，供三个边构建函数按文件遍历。
+        节点 id 以 ``_uid`` 拼接，同一 (类型,路径,行) 幂等去重。
+        """
+        if file_path not in self._nodes_by_file:
+            self._nodes_by_file[file_path] = []
+        self._nodes_by_file[file_path].append(nid)
+
+    def _file_node_ids(self, file_path: str) -> list[str]:
+        """按文件取节点 id 列表（BUG 50 性能）。
+
+        优先走 ``_nodes_by_file`` 文件索引（O(本文件节点)）；当索引缺失
+        （pickle 缓存恢复的图没有重建索引，见 ``_load_graph_cache``）时
+        回退到全图扫描按 ``file_path`` 过滤，保证语义与旧实现逐节点一致。
+        用 ``is not None`` 判断而非真值，使「索引存在但为空文件」不回退
+        全图扫描。
+        """
+        ids = self._nodes_by_file.get(file_path)
+        if ids is not None:
+            return ids
+        return [
+            nid for nid, data in self.graph.nodes(data=True) if data.get("file_path") == file_path
+        ]
+
     @staticmethod
     def _resolve_bare_name(
         file_path: str,
@@ -1118,14 +1170,16 @@ class CPGGraphBuilder:
         var-ref 落在起始行的后续行，旧逻辑按 ``{file}:{line}`` 精确匹配导致
         RHS 变量永远桥不上定义节点（只有与起始行同行的变量能桥）。改为按定义
         行区间 ``[line, end_line]`` 匹配——与 BUG 46 调用侧同类的多行缺陷。
+
+        BUG 50 (性能): 遍历范围从「全图节点」收窄到 ``_nodes_by_file`` 文件索引
+        ——大项目每文件一次调用从 O(全图) 降到 O(本文件节点)。索引为空（缓存
+        恢复的图）时回退全图扫描保证语义不变。
         """
         # Collect assignment spans (start_line, end_line, aid, var_name)
         spans: list[tuple[int, int, str, str]] = []
-        for nid, data in self.graph.nodes(data=True):
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_ASSIGNMENT:
-                continue
-            fp = data.get("file_path", "")
-            if fp != file_path:
                 continue
             loc = data.get("location", "")
             start = int(loc.rsplit(":", 1)[-1]) if ":" in loc else 0
@@ -1142,11 +1196,9 @@ class CPGGraphBuilder:
         # on the stored ``source``) — 否则行区间内的无关变量会被误桥接
         # （如多行语句共享行区间的变量，vampi 上曾因此 FP 暴涨）。source
         # 存的是完整 def_expression，缺失时退回行匹配保持召回。
-        for nid, data in self.graph.nodes(data=True):
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_VARIABLE_REF:
-                continue
-            fp = data.get("file_path", "")
-            if fp != file_path:
                 continue
             v_var = data.get("var_name", "")
             if not v_var:
@@ -1177,13 +1229,16 @@ class CPGGraphBuilder:
         在调用起始行的后续行，旧逻辑按 ``{file}:{line}`` 精确匹配导致实参
         永远桥不上（只有与起始行同行的 receiver 能桥）。改为按调用行区间
         ``[line, end_line]`` 匹配——var-ref 行落在调用表达式展开区间内即桥接。
+
+        BUG 50 (性能): 遍历范围从「全图节点」收窄到 ``_nodes_by_file`` 文件索引
+        ——大项目每文件一次调用从 O(全图) 降到 O(本文件节点)。索引为空（缓存
+        恢复的图）时回退全图扫描保证语义不变。
         """
         # (start_line, end_line, csid, expression) —— end_line 缺失时退化为单行
         spans: list[tuple[int, int, str, str]] = []
-        for nid, data in self.graph.nodes(data=True):
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_CALL_SITE:
-                continue
-            if data.get("file_path") != file_path:
                 continue
             start = data.get("line", 0)
             end = data.get("end_line") or start
@@ -1191,10 +1246,9 @@ class CPGGraphBuilder:
         if not spans:
             return
 
-        for nid, data in self.graph.nodes(data=True):
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_VARIABLE_REF:
-                continue
-            if data.get("file_path") != file_path:
                 continue
             vname = data.get("var_name", "")
             if not vname:
@@ -1237,16 +1291,19 @@ class CPGGraphBuilder:
         # 否则会在真实漏报之外再造一批假阳性。前提（缺陷平衡铁律）：被跳过者
         # 均为安全 API，不涉及真实 taint 通道（setAttribute/put/add 等不在
         # sanitizer 列表里，不受影响）。
+        #
+        # BUG 50 (性能): 三个收集循环遍历范围从「全图节点」收窄到
+        # ``_nodes_by_file`` 文件索引 —— 大项目每文件一次调用从 O(全图) 降到
+        # O(本文件节点)。索引为空（缓存恢复的图）时回退全图扫描保证语义不变。
         sanitizers: set[str] = set()
         if self._taint_loader is not None:
             for pat in _all_sanitizer_patterns(self._taint_loader, language):
                 sanitizers.add(pat)
 
         writes: dict[tuple[str, str], list[str]] = {}
-        for nid, data in self.graph.nodes(data=True):
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_CALL_SITE:
-                continue
-            if data.get("file_path") != file_path:
                 continue
             expr = data.get("expression", "")
             m = _HOST_METHOD_RE.match(expr)
@@ -1262,10 +1319,9 @@ class CPGGraphBuilder:
 
         # 2 — 收集宿主 var_ref：(enclosing_function, var_name) → [var_ref]
         host_varrefs: dict[tuple[str, str], list[str]] = {}
-        for nid, data in self.graph.nodes(data=True):
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_VARIABLE_REF:
-                continue
-            if data.get("file_path") != file_path:
                 continue
             key = (data.get("enclosing_function", ""), data.get("var_name", ""))
             host_varrefs.setdefault(key, []).append(nid)
@@ -1473,9 +1529,14 @@ class CPGGraphBuilder:
         # Prefer the full ``signature`` attribute (stored at build time);
         # fall back to deriving it from ``source`` for graphs loaded from a
         # cache written before the ``signature`` attribute existed.
+        #
+        # BUG 50 (性能): 两趟全图扫描每文件 O(G) → 全项目 O(F×G)（9879 文件 ×
+        # 270 万节点 ≈ 1 小时级），收窄到 ``_nodes_by_file`` 文件索引后 O(本文件
+        # 节点)。缓存恢复路径已在 add_directory 重建索引，此处索引恒可用。
         func_signature_by_name: dict[str, str] = {}
-        for _nid, data in self.graph.nodes(data=True):
-            if data.get("file_path") == file_path and data.get("node_type") == NODE_FUNCTION:
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
+            if data.get("node_type") == NODE_FUNCTION:
                 name = data.get("name", "")
                 sig = data.get("signature", "")
                 if not sig:
@@ -1485,9 +1546,8 @@ class CPGGraphBuilder:
                 if name and sig:
                     func_signature_by_name[name] = sig
 
-        for _nid, data in self.graph.nodes(data=True):
-            if data.get("file_path") != file_path:
-                continue
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
 
             # BUG 40: 重新打标签前清掉该文件节点上可能残留的旧标签。
             # 缓存复用时若规则集与建图时不同（如 rules/ 开/关、增删模式），
