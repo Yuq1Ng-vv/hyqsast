@@ -80,6 +80,7 @@ class CallGraphBuilder:
                 names=imp.names,
                 is_relative=imp.is_relative,
                 file_path=path,
+                alias=imp.alias,
             )
             for imp in imports
         ]
@@ -187,6 +188,30 @@ class CallGraphBuilder:
         resolved_imports = self.resolve_imports()
         cross_edges: list[CallEdge] = []
 
+        # BUG 54: 每文件 alias→模块 表（``import X as Y`` 的 Y）。receiver 解析用：
+        # 调用点 ``Y.process(...)`` → 按 Y 反查 module → 解析到具体文件，把跨模块
+        # 同名函数扇出收窄到 receiver 指向的那一个。
+        #
+        # 安全性（铁律：收窄不得增漏报）：同一文件里同一 alias 绑定到**多个不同
+        # 模块**（如 dense2 的 handler 文件内 20 个函数各自 ``import svXX as svmod``）
+        # 时标记 ambiguous —— receiver 解析不可靠，回退旧全连接逻辑，不收紧。
+        alias_to_module: dict[str, dict[str, str]] = {}
+        alias_ambiguous: dict[str, set[str]] = {}
+        for fp, imps in self._imports.items():
+            table: dict[str, str] = {}
+            for imp in imps:
+                if imp.alias and imp.module:
+                    prev = table.get(imp.alias)
+                    if prev is not None and prev != imp.module:
+                        alias_ambiguous.setdefault(fp, set()).add(imp.alias)
+                    table[imp.alias] = imp.module
+                    # ``from services.sv00 import process as p``：p 是函数名别名，
+                    # 不是模块——此处只对简单 import 的模块别名做 receiver 解析。
+                    # from-import 的别名留在 names 里（resolve_imports 已注册），
+                    # 这里不覆盖，避免把函数别名误当模块。
+            alias_to_module[fp] = table
+        file_index = self._file_index()
+
         for file_path, cg in self._graphs.items():
             imports_for_file = self._imports.get(file_path, [])
             imported_modules = {imp.module for imp in imports_for_file}
@@ -199,7 +224,26 @@ class CallGraphBuilder:
                 if not candidates:
                     continue
 
-                resolved_target: str | None = None
+                # BUG 54: receiver 别名解析。命中 → 候选收窄到 receiver 指向的
+                # 具体文件（且该文件必须是可达的）；未命中/解析失败/alias 歧义
+                # → 回退旧逻辑（铁律：宁可过近似不漏报）。
+                receiver_candidates: list[str] | None = None
+                ambiguous = uc.receiver in alias_ambiguous.get(file_path, set())
+                if uc.receiver and not ambiguous:
+                    module = alias_to_module.get(file_path, {}).get(uc.receiver)
+                    if module:
+                        target = self._resolve_module_path(
+                            module,
+                            str(Path(file_path).parent),
+                            file_index,
+                        )
+                        if target is not None and target in candidates:
+                            # 只保留 receiver 指向的那一个候选文件（若在候选里）
+                            receiver_candidates = [target]
+
+                # BUG 53: 收集所有「调用方实际可达」的目标文件（按 import 过滤），
+                # 供建图阶段收紧参数收集；resolved_target 取第一个用于 CALLS 边。
+                reachable_files: list[str] = []
                 for target_file in candidates:
                     if target_file == file_path:
                         continue  # already resolved as intra-file
@@ -215,10 +259,16 @@ class CallGraphBuilder:
                     if same_dir or self._is_reachable(
                         file_path, target_file, imported_modules, resolved_imports
                     ):
-                        resolved_target = target_file
-                        break  # first reachable candidate wins
+                        reachable_files.append(target_file)
 
-                if resolved_target is None:
+                if receiver_candidates is not None:
+                    # BUG 54: receiver 命中时精确收紧 —— 只连 receiver 指向的文件。
+                    # 但该文件必须也在可达集里（别名 import 天然可达，此处防御）。
+                    precise = [t for t in receiver_candidates if t in reachable_files]
+                    if precise:
+                        reachable_files = precise
+
+                if not reachable_files:
                     continue
 
                 cross_edges.append(
@@ -231,10 +281,20 @@ class CallGraphBuilder:
                         is_resolved=True,
                         is_method_call=uc.is_method_call,
                         file_path=file_path,
+                        receiver=uc.receiver,
+                        resolved_files=reachable_files,
                     )
                 )
 
         return cross_edges
+
+    def _file_index(self) -> dict[str, list[str]]:
+        """文件名（stem）→ 路径列表 索引，供 receiver 模块解析复用。"""
+        index: dict[str, list[str]] = {}
+        for fp in self._graphs:
+            stem = Path(fp).stem
+            index.setdefault(stem, []).append(fp)
+        return index
 
     # ── Query helpers ───────────────────────────────────────────────────
 
@@ -491,7 +551,7 @@ class CallGraphBuilder:
 class _ResolvedImport:
     """Internal: a single import statement, resolved to a file path."""
 
-    __slots__ = ("file_path", "is_relative", "module", "names")
+    __slots__ = ("file_path", "is_relative", "module", "names", "alias")
 
     def __init__(
         self,
@@ -499,8 +559,12 @@ class _ResolvedImport:
         names: list[str],
         is_relative: bool,
         file_path: str,
+        alias: str | None = None,
     ) -> None:
         self.module = module
         self.names = names
         self.is_relative = is_relative
         self.file_path = file_path
+        # BUG 54: ``import X as Y`` / ``from X import f as Y`` 的接收端别名 Y。
+        # receiver 解析用：调用点 ``Y.process(...)`` 时 Y 指向 module。
+        self.alias = alias

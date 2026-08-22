@@ -250,6 +250,7 @@ class ScanSummary:
     functions: int = 0
     endpoints: int = 0
     findings: int = 0
+    sources: int = 0
     sinks: int = 0
     blind_spots: int = 0
     # P0-2: 每个漏洞类别因 max_findings_per_category 被截断的候选数。

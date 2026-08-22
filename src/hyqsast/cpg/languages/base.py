@@ -169,6 +169,21 @@ class LanguageProvider(ABC):
         """
         ...
 
+    def extract_receiver(self, node: Node) -> str | None:
+        """Extract the object/alias prefix of a method call, if any.
+
+        Returns the leading identifier of the call's object expression —
+        e.g. ``"svmod"`` from ``svmod.process(...)`` — so the cross-file
+        call graph can resolve the receiver alias to a concrete module via
+        import statements (BUG 54: 避免同文件内多个函数各自 import 不同模块
+        时 per-file import 并集把跨模块同名函数全部连进来)。
+
+        Default: ``None`` (no receiver).  Only Python currently overrides
+        this; Java/JS keep the old bare-name matching.  Callers MUST treat
+        ``None`` as "no alias information — fall back to existing logic".
+        """
+        return None
+
     # ── Data-flow helpers (dataflow.py delegates to these) ──────────────
 
     @property

@@ -178,6 +178,7 @@ class PythonAdapter(LanguageProvider):
         source = node.text.decode("utf-8") if node.text else ""
         module = ""
         names: list[str] = []
+        alias: str | None = None
 
         for child in node.children:
             if child.type == "dotted_name":
@@ -186,17 +187,23 @@ class PythonAdapter(LanguageProvider):
                     module = name
                 names.append(name)
             elif child.type == "aliased_import":
+                dotted = None
                 for sub in child.children:
                     if sub.type == "dotted_name":
                         name = sub.text.decode("utf-8") if sub.text else ""
+                        dotted = name
                         if not module:
                             module = name
                         names.append(name)
+                    elif sub.type == "identifier" and dotted is not None:
+                        # BUG 54: ``import services.sv00 as svmod`` → alias=svmod
+                        alias = sub.text.decode("utf-8") if sub.text else None
 
         return ImportNode(
             module=module,
             names=names,
             start_line=node.start_point[0] + 1,
+            alias=alias,
             source=source,
         )
 
@@ -207,6 +214,7 @@ class PythonAdapter(LanguageProvider):
         names: list[str] = []
         is_relative = False
         was_import_kw = False
+        alias: str | None = None
 
         for child in node.children:
             if child.type == "dotted_name" and not was_import_kw:
@@ -219,9 +227,15 @@ class PythonAdapter(LanguageProvider):
             elif child.type == "dotted_name" and was_import_kw:
                 names.append(child.text.decode("utf-8") if child.text else "")
             elif child.type == "aliased_import":
+                dotted = None
                 for sub in child.children:
                     if sub.type == "dotted_name":
-                        names.append(sub.text.decode("utf-8") if sub.text else "")
+                        dotted = sub.text.decode("utf-8") if sub.text else ""
+                        names.append(dotted)
+                    elif sub.type == "identifier" and dotted is not None:
+                        # BUG 54: ``from services.sv00 import process as p``
+                        # → names 里已有 process，alias=p 标记「接收端别名」。
+                        alias = sub.text.decode("utf-8") if sub.text else None
             elif child.type == "wildcard_import":
                 names.append("*")
 
@@ -230,6 +244,7 @@ class PythonAdapter(LanguageProvider):
             names=names,
             start_line=node.start_point[0] + 1,
             is_relative=is_relative,
+            alias=alias,
             source=source,
         )
 
@@ -350,6 +365,29 @@ class PythonAdapter(LanguageProvider):
 
         # Catch-all for nested calls like ``foo()()``
         return (full, full, False)
+
+    def extract_receiver(self, node: Node) -> str | None:
+        """BUG 54: 取方法调用的对象前缀（receiver）。
+
+        ``svmod.process(...)`` → ``"svmod"``，``self.db.query(...)`` →
+        ``"self"``。只取**首段标识符**（dotted 链的最左端），供 build_calls
+        用 import 别名表把它解析到具体模块。返回 None 表示无对象前缀
+        （裸函数调用），调用方应回退旧逻辑。
+        """
+        func_expr = node.child_by_field_name("function")
+        if func_expr is None or func_expr.type != "attribute":
+            return None
+        named = [c for c in func_expr.children if c.is_named]
+        if not named:
+            return None
+        # 首段可能是 identifier（svmod.process）或嵌套 attribute
+        # （request.args.get → receiver 取 request）。取最左端标识符。
+        first = named[0]
+        while first.type == "attribute" and first.child_by_field_name("object") is not None:
+            first = first.child_by_field_name("object")
+        if first.type == "identifier" and first.text:
+            return first.text.decode("utf-8")
+        return None
 
     # ── Data flow ───────────────────────────────────────────────────────
 

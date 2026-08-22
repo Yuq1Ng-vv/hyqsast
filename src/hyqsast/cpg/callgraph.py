@@ -11,7 +11,7 @@ See DESIGN-IMPLEMENTATION.md Section 2.2 for the interface specification.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from tree_sitter import Node, Tree
@@ -54,6 +54,14 @@ class CallEdge:
     is_resolved: bool = False
     is_method_call: bool = False
     file_path: str = ""
+    # BUG 54: 方法调用的对象前缀（``svmod`` from ``svmod.process(...)``）。
+    # build_calls 用它 + import 别名表把 callee 解析到具体模块文件；
+    # None 表示无 receiver（裸调用），下游回退旧逻辑。
+    receiver: str | None = None
+    # BUG 53: 跨文件解析出的「调用方实际可达」的目标文件列表（按 import 过滤）。
+    # 交给建图阶段收紧 DATA_FLOW 参数收集，避免把全库同名函数的参数都连进来。
+    # 为空表示未解析（旧代码路径 / 不可解析 import），下游回退全连接兜底。
+    resolved_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -70,6 +78,8 @@ class UnresolvedCall:
     is_method_call: bool
     file_path: str
     call_end_line: int | None = None
+    # BUG 54: 方法调用的对象前缀，见 CallEdge.receiver。
+    receiver: str | None = None
 
 
 # ─── Core class ────────────────────────────────────────────────────────────
@@ -123,6 +133,7 @@ class SingleFileCallGraph:
                 caller=e.caller,
                 is_method_call=e.is_method_call,
                 file_path=e.file_path,
+                receiver=e.receiver,
             )
             for e in self._edges
             if not e.is_resolved
@@ -213,6 +224,8 @@ class SingleFileCallGraph:
                 continue
 
             bare_name, full_expr, is_method = callee_info
+            # BUG 54: 提取方法调用的对象前缀（svmod），供跨文件解析用
+            receiver = provider.extract_receiver(call_node)
 
             caller = self._find_enclosing_func(call_node, provider)
             if caller is None:
@@ -242,6 +255,7 @@ class SingleFileCallGraph:
                 is_resolved=is_resolved,
                 is_method_call=is_method,
                 file_path=file_path,
+                receiver=receiver,
             )
             self._edges.append(edge)
 

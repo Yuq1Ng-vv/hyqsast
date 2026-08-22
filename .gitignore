@@ -24,3 +24,4 @@ benchmarks/owasp/results/
 
 # 性能探针生成产物（可经 perf_gen_probes.py 重新生成）
 perf_probes/
+repro_py_fp/

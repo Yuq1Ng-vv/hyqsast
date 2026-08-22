@@ -244,6 +244,9 @@ class Analyzer:
                         finding = self._ids_to_finding(node_ids, edge_types, cat)
                         if finding is None:
                             continue
+                        # 精去重：同一 (类别, 源位置, sink 位置) 只报一条。
+                        # 不同 source → 同一 sink 的真实调用链保留（BUG 53 已
+                        # 保证这些链是真边，不该被砍）。
                         key = (
                             cat,
                             finding.source.file_path,
@@ -913,12 +916,14 @@ class Analyzer:
     ) -> ScanSummary:
         graph = self.graph_builder.graph
         functions = sum(1 for _, d in graph.nodes(data=True) if d.get("node_type") == NODE_FUNCTION)
+        sources = sum(1 for _, d in graph.nodes(data=True) if d.get("taint_source"))
         sinks = sum(1 for _, d in graph.nodes(data=True) if d.get("taint_sink"))
         return ScanSummary(
             files=len(self._source_files()),
             functions=functions,
             endpoints=len(endpoints),
             findings=len(findings),
+            sources=sources,
             sinks=sinks,
             blind_spots=len(blind_spots),
             truncated_categories=dict(self._truncated_categories),

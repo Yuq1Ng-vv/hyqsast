@@ -793,7 +793,13 @@ class CPGGraphBuilder:
 
         # Add cross-file CALLS edges
         for edge in cross_edges:
-            target_file = self._call_graph_builder.find_definition(edge.callee)
+            # BUG 53: 优先用可达文件集里的第一个做 CALLS 边目标（与 build_calls
+            # 的解析一致）；旧路径退回收敛的 find_definition。
+            target_file = (
+                edge.resolved_files[0] if edge.resolved_files else None
+            )
+            if target_file is None:
+                target_file = self._call_graph_builder.find_definition(edge.callee)
             caller_fid = _uid(NODE_FUNCTION, edge.file_path, edge.caller)
             if target_file:
                 callee_fid = _uid(NODE_FUNCTION, target_file, edge.callee)
@@ -818,6 +824,7 @@ class CPGGraphBuilder:
                         expression=edge.full_expression,
                         is_resolved=True,
                         cross_file=True,
+                        callee_files=list(edge.resolved_files),
                     )
                     # BUG 50 (性能): 跨文件 call-site 也登记进文件索引 —— 三个边
                     # 构建函数在 add_file 阶段已跑完不会处理它，但登记使索引
@@ -826,6 +833,10 @@ class CPGGraphBuilder:
                 else:
                     self.graph.nodes[cid]["is_resolved"] = True
                     self.graph.nodes[cid]["cross_file"] = True
+                    if edge.resolved_files:
+                        self.graph.nodes[cid]["callee_files"] = list(
+                            edge.resolved_files
+                        )
                 self.graph.add_edge(caller_fid, cid, edge_type=EDGE_CALLS)
                 self.graph.add_edge(cid, callee_fid, edge_type=EDGE_CALLS)
 
@@ -913,22 +924,46 @@ class CPGGraphBuilder:
             call_file = data.get("file_path", "")
             call_line = data.get("line", 0)
 
-            # Find the callee function
+            # BUG 53: 跨文件调用只连「调用方实际可达」的目标文件里的同名函数
+            # （build_calls 已按 import 算出并存在 callee_files）。旧实现把全库
+            # 同名函数参数全收进 param_nodes，f-string 等非变量实参再触发全连接
+            # → 每个调用方连向所有模块的同一函数 → 稠密伪边，一个 source 前向
+            # 到达所有 sink。callee_files 缺失（旧缓存 / 不可解析 import）时回退
+            # 原全连接兜底，保证不漏报。
+            callee_files: list[str] = (
+                data.get("callee_files") or [] if data.get("cross_file") else []
+            )
+            callee_fids: list[str] = []
             if data.get("cross_file"):
-                callee_fid = func_by_name.get(callee_name)
+                if callee_files:
+                    for cf in callee_files:
+                        fid = func_index.get((cf, callee_name))
+                        if fid is not None:
+                            callee_fids.append(fid)
+                else:
+                    fid = func_by_name.get(callee_name)
+                    if fid is not None:
+                        callee_fids.append(fid)
             else:
-                callee_fid = func_index.get((call_file, callee_name))
+                fid = func_index.get((call_file, callee_name))
+                if fid is not None:
+                    callee_fids.append(fid)
 
-            if callee_fid is None:
+            if not callee_fids:
                 continue
+            callee_fid = callee_fids[0]
 
-            # Callee parameter nodes (from any file for cross-file calls)
+            # Callee parameter nodes
             param_nodes: list[str] = []
             if data.get("cross_file"):
-                # Search across all indexed files
-                for (_fp, _ef), pids in param_index.items():
-                    if _ef == callee_name:
-                        param_nodes.extend(pids)
+                if callee_files:
+                    for cf in callee_files:
+                        param_nodes.extend(param_index.get((cf, callee_name), []))
+                else:
+                    # 旧路径：全库同名函数参数全收（过近似兜底）
+                    for (_fp, _ef), pids in param_index.items():
+                        if _ef == callee_name:
+                            param_nodes.extend(pids)
             else:
                 param_nodes = param_index.get((call_file, callee_name), [])
 
