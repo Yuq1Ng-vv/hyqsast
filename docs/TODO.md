@@ -1,7 +1,8 @@
 # HyqSast 优化路线图（TODO）
 
 > 按「什么时候想起来了什么时候做」的记录。已完成项也列出，避免重复评估。
-> 条目带估算优先级（P0/P1/P2/P3）与动机；P0/P1/P2(sqli) 已落地（见下文「已完成」）。
+> 条目带估算优先级（P0/P1/P2/P3）与动机；P0/P1/P2(sqli)/P3(crypto) + BUG 53-56
+> 已落地（见下文「已完成」）。
 
 ## 已完成（P0/P1，2026-08）
 
@@ -35,6 +36,15 @@
   读侧复用 RHS→LHS / var_ref→call_site 桥接。demo ⑥ 容器与 Builder 形态
   实测接住。**BUG 55（2026-08-22）：真项目 800k finding 主凶，默认关**，
   代码层/CLI `enable_container_bridge` 显式开启（README「过近似桥接启发式开关」）。
+  **BUG 56（2026-08-23）精确化**：删 `_is_container_write` 的
+  `setXxx/addXxx/putXxx` 前缀兜底（普通 setter 如 `Cookie.setPath` 不再当容器写 →
+  header FP 清零），只认白名单 + **宿主类型门控**（Java 下宿主声明类型必须 ∈
+  `_CONTAINER_TYPES` 约 45 个容器类型，`callgraph_builder.var_types(file_path)`
+  提供显式声明类型；非 Java 无类型信息维持旧行为）。OWASP per-file bridge-on
+  回归：**10 容器 FN 全恢复**（FN 50→40，TPR 96.5→**97.2%**），findings
+  24206→24679（**+473 vs 旧桥接 +6024**，爆炸缩小 92%），FP +5 全集合键不敏感，
+  header 零新增；ureport2 真实代码 +30/+0.6% 不爆炸（30 条逐条验证全为规则级假
+  sink，见 P3「规则清洗」）。
 - **cmdi 全量修复**（P1，`analyzer.py::_SINK_STR_TEMPLATE_CATS` 移除
   `command_injection` + `taint_rules.yaml` java sources 移除 `System.getProperty(`，
   BUG 45）：OWASP cmdi TPR 70.6%→**100%**（FN 37→0，含 envp 位置 15 例 +
@@ -136,6 +146,34 @@
   TOTAL FPR 71.8% 不变），四基准 A/B 零丢失（铁律通过）。结果存档
   `benchmarks/owasp/results/2026-08-21-crypto-pattern/`。逐例溯源见
   `docs/OWASP漏报清单.md` §5。可修 FN 至此全部清零。
+- **跨模块调用扇出收紧（BUG 53/54，2026-08-22）**：383 文件 Python 项目 finding
+  从 ~500 涨到 800k 的根因链 = BUG 47 全前沿 BFS × `rules/` 自动加载（sink
+  500→3163）× 跨文件同名函数按 per-file import 并集全连接兜底 → source 前向到达
+  所有模块的同一函数。修复 = **BUG 54** 方法调用对象前缀（receiver）提取 +
+  import 别名表解析，把 `svmod.process()` 收窄到 alias 指向的具体模块文件
+  （无 receiver / 解析失败 / alias 歧义三重安全回退 → 回退旧全连接，宁可过近似
+  不漏报）+ **BUG 53（slim）** 跨文件调用只连 `build_calls` 算出的可达目标文件。
+  OWASP 全量 TP=1375 / FN=40 / TPR 97.2% 与 HEAD 逐条一致（铁律满足）；真实形态
+  多模块 import 样例 **480→80（6× 削减，0 跨模块污染）**。
+- **per-file 回归工具规则对齐（2026-08-22）**：`chunk_scan.py::scan_per_file`
+  复刻 CLI 的 `rules/` 自动发现（`rules_paths`），修复 per-file 曾漏加载 `rules/`
+  的 cmdi sink 标签缺口（`exec@78` 从 path_traversal 恢复 command_injection，
+  **cmdi TPR 23%→96.8%**）；顺带补全 BUG 54 系列的跨文件同名 BFS 断链
+  （CALLS 边连所有 resolved_files 目标，`param_by_name` 改 dict[str,list[str]]）。
+  口径注记：per-file 96.5% 与整体基线持平，但 per-file 无跨文件撞衫伪链
+  （findings 24206 vs 整体 35932），是更诚实口径（详见
+  `docs/OWASP漏报清单.md` §0 与 README「验证」节）。
+- **规则库安全批（2026-08-22，commit 0953721）**：`docs/规则库审查报告-2026-08.md`
+  落地第一批可证明零损失改动——死规则 / 跨语言残留 / 复制粘贴清理：① Python xss
+  sources 删 JS DOM 专属 `.innerHTML` / `document.getElementById(`；② Python
+  path_traversal sinks 删 Java 方法 `.getCanonicalPath(` / `.getRealPath(`；
+  ③ Python xpath_injection 85 条 sql 复制 → 4 条真 XPath sink；④ JS sql_injection
+  删垃圾 token `dropb` / `biselect`；⑤ Java sql_injection 删 JVM 签名残片
+  `String;I)I:2,4(` / `String;I)I(`；⑥ Java sources 7×38 相同 source 集去重只留
+  `injection_general` 一份。回归证据：OWASP 分块回归（10 块，bridge 关）
+  TP 1365 / TPR 96.5% / findings 24571 与 HEAD 基线逐类别完全一致；五基准 A/B
+  （新增 `benchmarks/baseline_snapshot.py`）丢失=0 新增=0。方向修正类建议
+  （防御函数当 sink、auth_bypass 重构等）需独立回归批次，未纳入。
 
 ## P0/P1 性能：大项目建图 O(F×G) 卡死（2026-08-22 实测）
 
@@ -218,10 +256,17 @@
   BFS 剪枝、同源合并、并行化。**注**：2026-08-22 实测建图阶段才是当前大项目
   卡死主因（见上方 P0/P1 性能节），BFS 在 source 密集形态仅 0.1s；跨文件
   CALLS 扩散后 BFS 才会成为下一个瓶颈。
-- **`taint_rules.yaml` 清洗**：内置规则混入了 CodeQL 风格模板模式（如
-  `'String;I)I:2,4('`、`'(String $A)'`、`'List('`、`'Object('`、`'Query('`），
-  子串匹配下制造噪音（`doQuery(` 命中 `Query(` 即一例）。需逐条评估删除，
-  或迁到 codeql 专用区块由 `rules/` 接管。
+- **`taint_rules.yaml` 清洗**：内置规则混入 CodeQL 风格模板模式。安全批
+  （2026-08-22，commit 0953721）已删实证零召回价值的 JVM 签名残片
+  `String;I)I:2,4(` / `String;I)I(` 与垃圾 token；仍剩 `'List('`、`'Object('`、
+  `'Query('` 等裸模式，子串匹配下制造噪音（`doQuery(` 命中 `Query(` 即一例）。
+  **实证（2026-08-23，ureport2）**：`List(` 命中 `orderBindDataList(`（GroupAggregate
+  的 **Java 内存排序**，"orderBindData**List(**" 含 "List("）在 ureport2 基线上就
+  产生 278 条 sql_injection FP（`.insert(` 命中 StringBuilder.insert 再 +22；容器
+  桥接开启再 +30）——**裸模式是真实代码 FP 主力**。收紧 `List(` → 带限定符的
+  `.getResultList(` 等、`.insert(` 同理，几乎肯定不伤 OWASP 真 TP（OWASP sqli sink
+  都是 `executeQuery/executeUpdate` 类），待回归验证后落地；或迁到 codeql 专用
+  区块由 `rules/` 接管。
 - **多语言冒烟矩阵**：python / javascript / go / php 各写一个最小样例跑通
   `scan()`（go/php 引擎适配器未实现，规则已备好在 `rules/go.yaml`、`rules/php.yaml`）。
 

@@ -67,7 +67,7 @@ result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.
 - 模板与 CodeQL 适配契约见 `examples/rules/`（`example.rules.yaml` + `README.md`）；
   你的适配规则放仓库根目录 `rules/`（自动加载，契约见 `rules/README.md`）。
 
-## 过近似桥接启发式开关（BUG 55）
+## 过近似桥接启发式开关（BUG 55/56）
 
 两个为补漏报面加的过近似桥接默认**关**（真项目曾因它们测出几十万 finding）：
 
@@ -90,11 +90,39 @@ uv run hyqsast /path/to/project --language python \
     --enable-container-bridge --enable-state-bridge
 ```
 
-桥接开关拼进 CPG 图缓存 key，开/关切换不会复用旧图。**代价如实说明**（OWASP
-2026-08-22 实测，开→关）：TP 1375→1365（-10：cmdi -4 / sqli -5 / pathtraver -1），
-FN 40→50，TPR 97.2%→96.5%；findings 30595→24571（-19.7%）。默认关是有意权衡：
-真项目可用性优先，代价是这两类桥接补的 A/J 类漏报面召回缩水。全量对比见
-`benchmarks/owasp/results/2026-08-22-bug55-bridges-off/score.txt`。
+桥接开关拼进 CPG 图缓存 key，开/关切换不会复用旧图。
+
+**BUG 56 精确化（2026-08-23）**：容器桥接初版（BUG 55）在真实代码 FP 爆炸的根因
+有两层——① `_is_container_write` 的 `setXxx/addXxx/putXxx` 前缀兜底把普通 setter
+（`Cookie.setPath/setDomain`）当容器写，污点写进宿主 → header_injection FP；② 方法名
+白名单在真实代码大量出现在**领域对象**方法上（`order.add(item)`）。修法 = 删 setter
+兜底只认白名单 + **宿主类型门控**：Java 下宿主声明类型必须 ∈ `_CONTAINER_TYPES`
+（Map/List/Set/Collection/StringBuilder/HttpSession/Cookie 等约 45 个），由
+`callgraph_builder.var_types(file_path)` 提供显式声明类型；非 Java 无类型信息维持旧
+行为。OWASP 容器 FN（`map.put` / `List.add` / `argList.add`）宿主全显式声明为容器
+类型，不受影响。
+
+**开启成本（精确化后，OWASP per-file 口径，2026-08-23 实测）**：FN 50→40（
+**10 容器 FN 全恢复**：cmdi -4 / sqli -5 / pathtraver -1），TPR 96.5%→**97.2%**；
+findings 24206→24679（**+473，对比旧桥接 +6024，爆炸缩小 92%**）；安全用例新标
+**+5 全为集合键不敏感**（`map.put("keyB",taint)` 后 `get("keyA")` 读安全键、`add`
+后 `remove/get` 偏移），即既有 FPR 71.8% 的主流来源（需 P3 键敏感数据流），
+**header_injection 零新增**（setter 兜底删除彻底生效）。归档
+`benchmarks/owasp/results/2026-08-23-bridge-precise/`。
+
+**真实项目验证（ureport2，469 文件整体扫描）**：bridge-on 5213→5243（+30/+0.6%），
+**不爆炸**。但 30 条 sql_injection 逐条验证**全部是 FP**——规则级假 sink（java
+sql_injection sink 模式 `List(` 命中 `orderBindDataList(`（GroupAggregate 的 **Java
+内存排序**，"orderBindData**List(**" 含 "List("）+ `.insert(` 命中
+`sb.insert(0, "style=\"")`（**StringBuilder 拼 HTML**））+ 容器桥接过近似把 taint
+灌进 `list`/`sb` 参数。这些假 sink 模式基线上就存在（off 口径 1512 条 sqli 里
+`List(` 已占 278、`.insert(` 占 22），桥接只是多接了几条流；真 SQL 源
+（`req.getParameter("sql")`）的真执行点（`jdbc.execute` / `queryForList`）基线已报，
+**+30 不是任何新增真实命中**。这指向 P3「规则清洗」（收紧 `List(` / `.insert(`）。
+
+**默认关是有意权衡**：真项目可用性优先，代价是这两类桥接补的 A/J 类漏报面召回
+缩水；要补 A/J 类召回时开启，成本已从旧版「findings +24% + header FP」压到
+「+0.6%~+2% + 键不敏感 FP」（见上）。全量对比见 `benchmarks/owasp/results/`。
 
 ## 结果结构（`ScanResult`）
 
@@ -251,6 +279,7 @@ hash 配置驱动算法（静态不可判定，固有）；四轮修复引入的
 - 未做语义级别名/反射/动态特性分析；跨函数 CFG 不展开（每个函数 CFG 自洽）。
 - `blind_spots` 只含「无已知污点源的接口」这一种；未标记危险调用（`uncovered_sink`）
   在 `cpg/discovery.py` 里可另行调用，默认不产出以避免真实项目噪声爆炸。
+- 容器/状态两个过近似桥接**默认关**，可显式开启（见「过近似桥接启发式开关」节）。
 - 已知限制与优化路线图见 [`docs/TODO.md`](docs/TODO.md)（P0/P1 已完成、P2/P3 待做）。
 - 全量漏报面排查见 [`docs/漏报面清单.md`](docs/漏报面清单.md)（A–I 分类、实测断点、优化顺序）。
 

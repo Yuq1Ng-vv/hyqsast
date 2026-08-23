@@ -31,6 +31,18 @@
 > `benchmarks/owasp/results/2026-08-21-crypto-pattern/`（findings 30554）。
 > 至此可修 FN 全部清零，残余 40 全为配置驱动固有。详情见 §5。
 >
+> **bridge-on 精确化回归（2026-08-23，per-file 口径，与上文整体口径独立）**：
+> BUG 56（容器桥接精确化：setter 兜底删 + 宿主类型门控）后，per-file bridge-on
+> 把 **10 个容器写漏报全恢复**（cmdi -4 / sqli -5 / pathtraver -1），TOTAL TPR
+> **96.5%→97.2%**（FN 50→40），findings 24206→24679（**+473 vs 旧桥接 +6024**），
+> 安全用例新标 **+5 全集合键不敏感**（00093/00969/00970 cmdi、00113 sqli、
+> 00116 xpathi），header_injection 零新增。结果存档
+> `benchmarks/owasp/results/2026-08-23-bridge-precise/`。这 10 个是 per-file
+> 口径下「容器写 → 跨点读」形态的漏报（`map.put` / `List.add` / `argList.add`），
+> 与上文整体分块口径修复的 FN 同源不同形态；容器桥接默认仍关（BUG 55），需
+> `--enable-container-bridge` 显式开启。FP +5 详情与 key 不敏感类说明见
+> `README.md`「过近似桥接启发式开关」节。
+>
 > 类别 → vuln_type 映射与 `benchmarks/owasp/score.py` 的 `CAT_MAP` 完全一致
 > （含 `related_categories` 判定），因此本清单与评分结果对得上。
 >
