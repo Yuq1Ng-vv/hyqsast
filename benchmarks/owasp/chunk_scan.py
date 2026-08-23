@@ -34,6 +34,18 @@ def _collect_files() -> list[Path]:
     return sorted(p for p in TESTCODE.rglob("*.java") if p.is_file())
 
 
+def _vm_rss() -> str:
+    """当前进程 RSS（读 /proc/self/status，免 psutil 依赖）。"""
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return line.split()[1] + "kB"
+    except OSError:
+        pass
+    return "?"
+
+
 def scan_chunks(
     files: list[Path],
     out_dir: Path,
@@ -110,6 +122,75 @@ def merge(reports: list[Path], out_json: Path) -> dict:
     return merged
 
 
+def scan_per_file(files: list[Path], out_dir: Path, max_findings: int) -> dict:
+    """逐文件独立建图扫描（OWASP 自包含用例的正确口径）。
+
+    OWASP Benchmark 是 2740 个自包含测试用例，不是完整项目：跨文件调用图整体
+    建会让 ``thing.doSomething`` 这类撞衫方法全库全连（稠密伪边，findings
+    24571→35932）。per-file 模式每个文件单独建图 + 单独跑污点，最后合并——
+    单文件间无伪边，逐用例评分口径与 OWASP 官方一致。单个 Python 进程串行，
+    每文件小图用完即弃，内存有界（每文件 ~0.2s，2740 文件约 10 分钟）。
+
+    规则加载与 CLI 保持一致：cli.py 会在 cwd 存在 ``rules/`` 目录时自动加载
+    （叠加在内置 ``taint_rules.yaml`` 之上）。这里复刻同样的自动发现，否则
+    per-file 与 chunk 整体扫描的 sink 标签不一致（如 ``.exec(`` 的 cmdi 模式
+    只在 rules/java.yaml，漏加载会让 exec@78 只标 path_traversal 而非
+    command_injection）。
+    """
+    from hyqsast.api import scan
+
+    # 与 cli.py 相同的 rules/ 自动发现：cwd 下存在则加载（叠加合并）。
+    rules_paths: list[str] | None = None
+    auto_rules = Path.cwd() / "rules"
+    if auto_rules.is_dir():
+        rules_paths = [str(auto_rules)]
+        print(f"  [per-file] 自动加载额外规则目录: {auto_rules}")
+
+    merged: dict = {"summary": {}, "endpoints": [], "findings": [], "blind_spots": []}
+    part_dir = out_dir / "perfile"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    n_fail = 0
+    for i, f in enumerate(files, 1):
+        # 每文件一个独立目录（scan 要求目录），symlink 单文件进去避免复制。
+        box = part_dir / f"{i:04d}"
+        box.mkdir(exist_ok=True)
+        link = box / f.name
+        if not link.exists():
+            link.symlink_to(f)
+        try:
+            r = scan(
+                box,
+                language="java",
+                max_findings_per_category=max_findings,
+                use_cache=False,
+                include_blind_spots=False,
+                rules_paths=rules_paths,
+            )
+            d = r.to_dict()
+        except Exception as e:  # 单文件失败不影响整体回归
+            print(f"  [{i:04d}] {f.name} 失败：{e}")
+            n_fail += 1
+            continue
+        for k, v in d.get("summary", {}).items():
+            if isinstance(v, int):
+                merged["summary"][k] = merged["summary"].get(k, 0) + v
+        for key in ("endpoints", "findings", "blind_spots"):
+            merged[key].extend(d.get(key, []))
+        if i % 100 == 0:
+            rss = _vm_rss()
+            print(f"  [{i:04d}/{len(files)}] findings累计={len(merged['findings'])} rss={rss}")
+    if n_fail:
+        print(f"  [per-file] {n_fail}/{len(files)} 文件失败")
+    out_json = out_dir / "owasp-merged.json"
+    with open(out_json, "w") as fh:
+        json.dump(merged, fh, ensure_ascii=False)
+    print(
+        f"  [per-file] 完成：findings={len(merged['findings'])}"
+        f" endpoints={len(merged['endpoints'])} -> {out_json.name}"
+    )
+    return merged
+
+
 def score(report: Path, expected_csv: Path, score_txt: Path | None) -> None:
     score_script = Path(__file__).with_name("score.py")
     proc = subprocess.run(
@@ -127,6 +208,11 @@ def score(report: Path, expected_csv: Path, score_txt: Path | None) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="OWASP 分块扫描 + 合并 + 评分（内存有界）")
     ap.add_argument("--chunks", type=int, default=10, help="分块数（默认 10）")
+    ap.add_argument(
+        "--per-file",
+        action="store_true",
+        help="逐文件独立建图扫描（OWASP 自包含用例的正确口径，无跨文件伪边）",
+    )
     ap.add_argument(
         "--max-findings",
         type=int,
@@ -169,18 +255,16 @@ def main() -> None:
         ap.error(f"找不到 expectedresults：{EXPECTED}")
 
     files = _collect_files()
+    if args.per_file:
+        print(f"[chunk_scan] --per-file：{len(files)} 文件逐目录独立建图 -> {out_dir}")
+        merged_json = out_dir / "owasp-merged.json"
+        scan_per_file(files, out_dir, args.max_findings)
+        if not args.scan_only:
+            score(merged_json, EXPECTED, out_dir / "score.txt")
+            print(f"[chunk_scan] 评分已存档：{out_dir / 'score.txt'}")
+        return
+
     print(f"[chunk_scan] {len(files)} 文件 / {args.chunks} 块 -> {out_dir}")
-    extra_args = []
-    if args.enable_container_bridge:
-        extra_args.append("--enable-container-bridge")
-    if args.enable_state_bridge:
-        extra_args.append("--enable-state-bridge")
-    reports = scan_chunks(files, out_dir, args.chunks, args.max_findings, extra_args)
-    merged_json = out_dir / "owasp-merged.json"
-    merge(reports, merged_json)
-    if not args.scan_only:
-        score(merged_json, EXPECTED, out_dir / "score.txt")
-        print(f"[chunk_scan] 评分已存档：{out_dir / 'score.txt'}")
 
 
 if __name__ == "__main__":

@@ -808,14 +808,17 @@ class CPGGraphBuilder:
 
         # Add cross-file CALLS edges
         for edge in cross_edges:
-            # BUG 53: 优先用可达文件集里的第一个做 CALLS 边目标（与 build_calls
-            # 的解析一致）；旧路径退回收敛的 find_definition。
-            target_file = edge.resolved_files[0] if edge.resolved_files else None
-            if target_file is None:
-                target_file = self._call_graph_builder.find_definition(edge.callee)
+            # BUG N: 旧实现只取 resolved_files[0] 做 CALLS 目标 —— 跨文件同名
+            # 函数只连到一个，其余目标的 BFS 断链（漏报）。这里连到**每个**可达
+            # 目标（build_calls 已按 import 过滤，不会稠密）；resolved_files 为空
+            # 时退回收敛的 find_definition（旧路径）。
+            target_files = list(edge.resolved_files)
+            if not target_files:
+                fd = self._call_graph_builder.find_definition(edge.callee)
+                if fd is not None:
+                    target_files = [fd]
             caller_fid = _uid(NODE_FUNCTION, edge.file_path, edge.caller)
-            if target_file:
-                callee_fid = _uid(NODE_FUNCTION, target_file, edge.callee)
+            if target_files:
                 # Add call-site node and edges
                 cid = _uid(
                     NODE_CALL_SITE,
@@ -849,7 +852,9 @@ class CPGGraphBuilder:
                     if edge.resolved_files:
                         self.graph.nodes[cid]["callee_files"] = list(edge.resolved_files)
                 self.graph.add_edge(caller_fid, cid, edge_type=EDGE_CALLS)
-                self.graph.add_edge(cid, callee_fid, edge_type=EDGE_CALLS)
+                for tf in target_files:
+                    callee_fid = _uid(NODE_FUNCTION, tf, edge.callee)
+                    self.graph.add_edge(cid, callee_fid, edge_type=EDGE_CALLS)
 
         # 5 — Cross-function DATA_FLOW edges: connect caller argument
         # variable-refs to callee parameter nodes so the BFS can trace
@@ -964,7 +969,6 @@ class CPGGraphBuilder:
 
             if not callee_fids:
                 continue
-            callee_fid = callee_fids[0]
 
             # Callee parameter nodes
             param_nodes: list[str] = []
@@ -1008,17 +1012,21 @@ class CPGGraphBuilder:
             # 1) 参数名匹配（highest）：实参变量名 == 形参名。
             #    name 是跨函数参数绑定的最强信号（很多代码风格里
             #    调用点传的变量名与被调函数参数同名）。
-            param_by_name: dict[str, str] = {}
+            # BUG N: 同名形参在多个目标文件里各有一个 → 值从 dict[str,str]
+            # 改 dict[str,list[str]]，一个实参名连到**所有**文件的同名形参
+            # （过近似，保证不漏报）。
+            param_by_name: dict[str, list[str]] = {}
             for pid in sorted_params:
                 pname = self.graph.nodes[pid].get("var_name", "")
-                if pname and pname not in param_by_name:
-                    param_by_name[pname] = pid
+                if pname:
+                    param_by_name.setdefault(pname, []).append(pid)
 
             name_matched: set[str] = set()  # 已按名连接的实参变量名
             for arg_text, vid in varref_by_name.items():
-                pid = param_by_name.get(arg_text)
-                if pid is not None:
-                    self.graph.add_edge(vid, pid, edge_type=EDGE_DATA_FLOW, confidence="high")
+                pids = param_by_name.get(arg_text)
+                if pids:
+                    for pid in pids:
+                        self.graph.add_edge(vid, pid, edge_type=EDGE_DATA_FLOW, confidence="high")
                     name_matched.add(arg_text)
 
             # 2) 位置匹配（medium）：call_args[i] → 第 i 个形参。
@@ -1054,15 +1062,22 @@ class CPGGraphBuilder:
 
             # DATA_FLOW edges through the call_site node itself:
             #   var_ref → call_site → callee_function → param
+            # BUG N（承重）：跨文件同名函数有多个可达目标时，必须连到**每个**
+            # 目标函数节点，否则只有 callee_fids[0] 可达 → 其余文件的同名函数
+            # BFS 断链（漏报）。name/positional 直连只覆盖了首个目标的形参，
+            # 其余目标靠这条 call_site → function 边 + function → param 桥保持
+            # 可达（铁律：过近似，保证不漏报）。
             for arg_vid in caller_var_refs:
                 self.graph.add_edge(arg_vid, nid, edge_type=EDGE_DATA_FLOW)
-                self.graph.add_edge(nid, callee_fid, edge_type=EDGE_DATA_FLOW)
+                for cfid in callee_fids:
+                    self.graph.add_edge(nid, cfid, edge_type=EDGE_DATA_FLOW)
 
             # Return value: connect callee_function → caller's assignment
             # at the call line (approximates "callee return → caller result")
             caller_assigns = assign_index.get((call_file, caller_name, call_line), [])
             for a_nid in caller_assigns:
-                self.graph.add_edge(callee_fid, a_nid, edge_type=EDGE_DATA_FLOW)
+                for cfid in callee_fids:
+                    self.graph.add_edge(cfid, a_nid, edge_type=EDGE_DATA_FLOW)
 
         # ── Also connect callee_function directly to its parameter nodes ─
         # via DATA_FLOW edges, so BFS can traverse:
