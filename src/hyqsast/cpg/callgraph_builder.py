@@ -464,6 +464,14 @@ class CallGraphBuilder:
         """Return ALL file paths where *func_name* is defined."""
         return list(self._all_functions.get(func_name, []))
 
+    def var_types(self, file_path: str) -> dict[str, str]:
+        """该文件显式声明的变量名 → 简单类型（供容器桥接类型门控用）。
+
+        只覆盖 Java 的局部变量/参数/字段的显式声明（``Map m`` / ``List<X> l`` /
+        ``StringBuilder sb``）；``var`` 推断、动态语言不在内 → 返回空 dict。
+        """
+        return self._var_types.get(file_path, {})
+
     # ── Internal helpers ────────────────────────────────────────────────
 
     # Extensions we try for JS/TS relative imports and absolute module paths

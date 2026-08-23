@@ -1,6 +1,6 @@
 """benchmarks/owasp/chunk_scan.py — OWASP 分块扫描 + 合并（内存有界回归入口）。
 
-2766 文件单进程建图在本机（~1.6GiB RAM）会 OOM——跨文件调用图是内存大头
+2740 文件单进程建图在本机（~1.6GiB RAM）会 OOM——跨文件调用图是内存大头
 （见 README「内存注意」）。本脚本把 testcode 文件按名字排序切成 ``--chunks``
 个连续块，每块一个子进程跑 hyqsast（内存有界），再合并 findings 评分。OWASP
 每个测试用例自包含，跨块边不影响逐用例评分，且与全量扫描 A/B 零差异（已实证，
@@ -122,7 +122,13 @@ def merge(reports: list[Path], out_json: Path) -> dict:
     return merged
 
 
-def scan_per_file(files: list[Path], out_dir: Path, max_findings: int) -> dict:
+def scan_per_file(
+    files: list[Path],
+    out_dir: Path,
+    max_findings: int,
+    enable_container_bridge: bool = False,
+    enable_state_bridge: bool = False,
+) -> dict:
     """逐文件独立建图扫描（OWASP 自包含用例的正确口径）。
 
     OWASP Benchmark 是 2740 个自包含测试用例，不是完整项目：跨文件调用图整体
@@ -135,7 +141,8 @@ def scan_per_file(files: list[Path], out_dir: Path, max_findings: int) -> dict:
     （叠加在内置 ``taint_rules.yaml`` 之上）。这里复刻同样的自动发现，否则
     per-file 与 chunk 整体扫描的 sink 标签不一致（如 ``.exec(`` 的 cmdi 模式
     只在 rules/java.yaml，漏加载会让 exec@78 只标 path_traversal 而非
-    command_injection）。
+    command_injection）。桥接开关与 ``--enable-container-bridge`` /
+    ``--enable-state-bridge`` 透传一致（A/B 用）。
     """
     from hyqsast.api import scan
 
@@ -165,6 +172,8 @@ def scan_per_file(files: list[Path], out_dir: Path, max_findings: int) -> dict:
                 use_cache=False,
                 include_blind_spots=False,
                 rules_paths=rules_paths,
+                enable_container_bridge=enable_container_bridge,
+                enable_state_bridge=enable_state_bridge,
             )
             d = r.to_dict()
         except Exception as e:  # 单文件失败不影响整体回归
@@ -258,7 +267,13 @@ def main() -> None:
     if args.per_file:
         print(f"[chunk_scan] --per-file：{len(files)} 文件逐目录独立建图 -> {out_dir}")
         merged_json = out_dir / "owasp-merged.json"
-        scan_per_file(files, out_dir, args.max_findings)
+        scan_per_file(
+            files,
+            out_dir,
+            args.max_findings,
+            enable_container_bridge=args.enable_container_bridge,
+            enable_state_bridge=args.enable_state_bridge,
+        )
         if not args.scan_only:
             score(merged_json, EXPECTED, out_dir / "score.txt")
             print(f"[chunk_scan] 评分已存档：{out_dir / 'score.txt'}")

@@ -273,14 +273,50 @@ _CONTAINER_WRITE_METHODS = frozenset(
     }
 )
 
+# BUG 56 (FP 精确化)：方法名白名单（add/append/put/insert/store...）在真实代码里
+# 大量出现在**领域对象**上 —— ``order.add(item)``、``registry.insert(x)``、
+# ``monitor.store(v)``。参数带污点时若把非容器宿主也整体污染，下游任何读取都报
+# 假阳性（OWASP 开启桥接 findings 24571→30595 的 +6024 里，除 setter 兜底外还有
+# 一批这类）。类型门控只对**声明类型是容器/缓冲/会话**的宿主做桥接。OWASP 容器
+# FN（map.put/List.add/argList.add）宿主全部显式声明为容器类型，不受影响。
+# 非 Java（_var_types 只收集 Java 显式声明）无类型信息 → 走「未知类型」判定，
+# 由调用方决定是否跳过（Java 跳过；其余语言维持旧行为，见 _add_container_state_edges）。
+_CONTAINER_TYPES = frozenset(
+    {
+        # Map 家族
+        "Map", "HashMap", "LinkedHashMap", "TreeMap", "ConcurrentHashMap",
+        "Hashtable", "WeakHashMap", "IdentityHashMap", "Properties",
+        "SortedMap", "NavigableMap",
+        # Collection / List / Set / 队列
+        "Collection", "Iterable", "List", "ArrayList", "LinkedList", "Vector",
+        "Stack", "CopyOnWriteArrayList", "Set", "HashSet", "LinkedHashSet",
+        "TreeSet", "CopyOnWriteArraySet", "SortedSet", "NavigableSet",
+        "Queue", "Deque", "ArrayDeque", "PriorityQueue", "ConcurrentLinkedQueue",
+        "ArrayBlockingQueue", "LinkedBlockingQueue",
+        # 字符串缓冲 / 拼接
+        "StringBuilder", "StringBuffer", "StringJoiner",
+        # Web 会话 / 请求 / 属性容器
+        "HttpSession", "HttpServletRequest", "ServletRequest", "ServletContext",
+        "Session", "Cookie", "HttpCookie", "Attributes",
+        # 单值容器
+        "Optional",
+        "Array",
+    }
+)
+
 
 def _is_container_write(meth: str) -> bool:
-    """判断方法名是否「向宿主内部状态写」的调用。"""
-    if meth in _CONTAINER_WRITE_METHODS:
-        return True
+    """判断方法名是否「向宿主内部状态写」的调用。
 
-    # setXxx / addXxx / putXxx 风格 setter / 累加器（``setBuf``、``addWidget``…）
-    return len(meth) > 3 and meth[:3] in ("set", "add", "put") and meth[3].isupper()
+    BUG 56 (FP 精确化)：去掉 setXxx/addXxx/putXxx 风格兜底 —— ``setPath``、
+    ``setDomain``、``setMaxAge`` 等普通 setter 也命中，把污点写进 Cookie 这类
+    宿主后，``addCookie(userCookie)`` 读到污染宿主报 header_injection 假阳性。
+    只认 ``_CONTAINER_WRITE_METHODS`` 白名单里的真容器方法（put/add/append/
+    setAttribute 等）。OWASP 的容器桥接 FN（sqli5+cmdi4+pathtraver1，全是
+    map.put/List.add/argList.add）不依赖 setter 兜底，收紧不影响恢复。
+    宿主是否真是容器由 ``_CONTAINER_TYPES`` 类型门控把关（见桥接实现）。
+    """
+    return meth in _CONTAINER_WRITE_METHODS
 
 
 def _all_sanitizer_patterns(loader: TaintRuleLoader, language: str) -> list[str]:
@@ -1363,6 +1399,18 @@ class CPGGraphBuilder:
             for pat in _all_sanitizer_patterns(self._taint_loader, language):
                 sanitizers.add(pat)
 
+        # BUG 56 类型门控：Java 下只对**声明类型是容器**的宿主做状态桥接
+        # （``_CONTAINER_TYPES``：Map/List/Set/Collection/StringBuilder/会话等）。
+        # 方法名白名单（add/append/put/insert...）在真实代码里大量出现在领域对象上
+        # （``order.add(item)``），带污点时会把非容器宿主整体污染造成 FP 爆炸；
+        # 类型白名单把它们全部挡掉。OWASP 容器 FN（map.put/List.add/argList.add）
+        # 宿主全部显式声明为容器类型，不受影响。``var`` 推断 / 未声明的宿主
+        # （``host_types.get(host)`` 为 None）在 Java 下也跳过 —— 桥接是 opt-in
+        # 启发式，宁缺毋滥。非 Java 语言无类型信息，维持旧行为避免误伤。
+        host_types: dict[str, str] | None = None
+        if language == "java" and self._call_graph_builder is not None:
+            host_types = self._call_graph_builder.var_types(file_path)
+
         writes: dict[tuple[str, str], list[str]] = {}
         for nid in self._file_node_ids(file_path):
             data = self.graph.nodes[nid]
@@ -1372,9 +1420,12 @@ class CPGGraphBuilder:
             m = _HOST_METHOD_RE.match(expr)
             if m is None or not _is_container_write(m.group("meth")):
                 continue
+            host = m.group("host")
+            if host_types is not None and host_types.get(host) not in _CONTAINER_TYPES:
+                continue
             if sanitizers and _matches_any(expr.lower(), sanitizers):
                 continue
-            key = (data.get("enclosing_function", ""), m.group("host"))
+            key = (data.get("enclosing_function", ""), host)
             writes.setdefault(key, []).append(nid)
 
         if not writes:
