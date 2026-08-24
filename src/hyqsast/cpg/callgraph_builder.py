@@ -9,6 +9,7 @@ See DESIGN-IMPLEMENTATION.md Section 2.2 for the interface specification.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import ClassVar
 
@@ -395,6 +396,13 @@ class CallGraphBuilder:
                 if target is not None and target in candidates:
                     receiver_candidates = [target]
 
+        # 同目录判断用字符串 dirname 而非 Path 对象：候选大循环（OWASP
+        # doSomething 1802 候选 × 病态调用）里每个候选建 4 个 Path（file_path/
+        # target_file 各一个 + 各自的 .parent），~百万次 Path 构造是 build_calls
+        # 的次热点。add_file 里路径已 str(Path(...).resolve()) 归一化，os.path
+        # dirname 与 Path(...).parent 语义等价且平台正确（Windows 反斜杠）。
+        is_java = file_path.endswith(".java")
+        caller_dir = os.path.dirname(file_path) if is_java else None
         reachable_files: list[str] = []
         for target_file in candidates:
             if target_file == file_path:
@@ -404,9 +412,7 @@ class CallGraphBuilder:
             # visibility).  Python and JS require explicit imports
             # even for same-directory files, so we scope this to
             # Java only.
-            same_dir = Path(file_path).parent == Path(target_file).parent and file_path.endswith(
-                ".java"
-            )
+            same_dir = is_java and os.path.dirname(target_file) == caller_dir
 
             if same_dir or self._is_reachable(
                 file_path, target_file, imported_modules, resolved_imports
