@@ -48,6 +48,12 @@ class CallGraphBuilder:
         self._var_types: dict[str, dict[str, str]] = {}
         self._method_classes: dict[str, dict[str, str]] = {}
         self._class_extends: dict[str, dict[str, set[str]]] = {}
+        # _resolve_module_path 结果缓存：(module, base_dir) → 文件路径或 None。
+        # 同一次扫描内 self._graphs / 文件系统不变，结果恒等；大型项目里绝大
+        # 多数 import（java.*、第三方包）不可解析，但每次仍逐级向上 exists()
+        # 探测数十次 stat 系统调用——这是 build_calls 里 resolve_imports 占
+        # ~90% 耗时的元凶（OWASP 2766 文件实测 199 万次 stat / 112s 里占 102s）。
+        self._resolve_cache: dict[tuple[str, str], str | None] = {}
 
     # ── File management ─────────────────────────────────────────────────
 
@@ -700,13 +706,45 @@ class CallGraphBuilder:
 
         return var_types, method_classes, class_extends
 
-    @staticmethod
     def _resolve_module_path(
+        self,
         module: str,
         base_dir: str,
         file_index: dict[str, list[str]],
     ) -> str | None:
-        """Convert a module name to a file path.
+        """Convert a module name to a file path（带 (module, base_dir) 记忆化）。
+
+        Python
+            ``".utils"`` → ``base_dir/../utils.py``
+            ``"app.models"`` → ``root/app/models.py``
+
+        Java
+            ``"com.example.Foo"`` → ``root/com/example/Foo.java``
+
+        JavaScript / TypeScript
+            ``"./utils"`` → ``base_dir/utils.js`` (also tries .ts/.mjs/…)
+            ``"../lib/foo"`` → ``base_dir/../lib/foo.js``
+
+        记忆化依据：同一模块在同一目录被多处 import（或同目录多文件 import 相同
+        模块）时，解析结果（含「解析失败 = None」）必然相同——同一次扫描内
+        ``self._graphs`` 与文件系统都不变。对不可解析的模块，原实现每次仍要走
+        完整个目录逐级向上 + 多扩展名 ``exists()`` 探测（几十次 stat 系统调用），
+        大型项目百万级调用；缓存后只算一次。
+        """
+        key = (module, base_dir)
+        if key in self._resolve_cache:
+            return self._resolve_cache[key]
+        result = self._resolve_module_path_uncached(module, base_dir, file_index)
+        self._resolve_cache[key] = result
+        return result
+
+    @staticmethod
+    def _resolve_module_path_uncached(
+        module: str,
+        base_dir: str,
+        file_index: dict[str, list[str]],
+    ) -> str | None:
+        """Convert a module name to a file path（无缓存，_resolve_module_path 的底层）。
 
         Python
             ``".utils"`` → ``base_dir/../utils.py``
