@@ -192,7 +192,7 @@ class CallGraphBuilder:
 
     # ── Cross-file call resolution ──────────────────────────────────────
 
-    def build_calls(self) -> list[CallEdge]:
+    def build_calls(self, progress: object | None = None) -> list[CallEdge]:
         """Build cross-file call edges.
 
         For each file's unresolved calls, checks whether the callee is
@@ -204,6 +204,8 @@ class CallGraphBuilder:
         单文件解析按裸名把调用吸收进本地函数，跨文件目标漏连 → BFS 断链。这里
         对「本地已解析 + callee 名被 import」的调用**额外**补发跨文件边（过近似）。
 
+        ``progress``（可选）：按文件上报进度（set_total + 每文件 step），
+        供 CPGGraphBuilder.add_directory 的「跨文件调用边」阶段实时出 ETA。
         """
         resolved_imports = self.resolve_imports()
         cross_edges: list[CallEdge] = []
@@ -223,6 +225,8 @@ class CallGraphBuilder:
         for fp, imps in self._imports.items():
             imported_names[fp] = {n for imp in imps for n in imp.names}
 
+        if progress is not None:
+            progress.set_total(len(self._graphs))
         for file_path, cg in self._graphs.items():
             imports_for_file = self._imports.get(file_path, [])
             imported_modules = {imp.module for imp in imports_for_file}
@@ -307,6 +311,8 @@ class CallGraphBuilder:
                     e.full_expression,
                     e.is_method_call,
                 )
+            if progress is not None:
+                progress.step(1)
 
         return cross_edges
 

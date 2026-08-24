@@ -436,29 +436,43 @@ class CPGGraphBuilder:
         return cache_root / f"{dir_hash}.pkl"
 
     @staticmethod
-    def _compute_source_fingerprint(directory: Path) -> str:
+    def _compute_source_fingerprint(
+        directory: Path, progress: object | None = None
+    ) -> str:
         """Compute a fingerprint of all source files under *directory*.
 
         用 (相对路径, 内容 sha256) 逐文件 hash —— 同一路径、同尺寸但内容
         变化也会导致指纹不同，缓存必然失效重建（漏报面 G 类：改文件但
         大小不变时旧图复用 = 新增漏洞扫不出来）。
+
+        ``progress``（可选）：7 万文件级项目上这个函数要读全部源码算 hash，
+        可耗时数分钟。逐源文件上报（set_total + step），避免静默卡死。
         """
         from hyqsast.cpg.languages import detect_by_extension
 
-        entries: list[str] = []
+        # 先收集源文件清单（一趟 rglob），再 set_total 逐文件 hash —— 分两趟
+        # 使进度条有总步数、ETA 可算；rglob 本身是轻量 stat，代价可忽略。
+        source_files: list[Path] = []
         for entry in sorted(directory.rglob("*")):
             if not entry.is_file():
                 continue
             if any(p.startswith(".") or p == "__pycache__" for p in entry.parts):
                 continue
             if detect_by_extension(str(entry)) is not None:
-                rel = entry.relative_to(directory)
-                try:
-                    with entry.open("rb") as fh:
-                        content_hash = hashlib.sha256(fh.read()).hexdigest()
-                except OSError:
-                    continue
-                entries.append(f"{rel}:{content_hash}")
+                source_files.append(entry)
+        if progress is not None:
+            progress.set_total(len(source_files))
+        entries: list[str] = []
+        for entry in source_files:
+            rel = entry.relative_to(directory)
+            try:
+                with entry.open("rb") as fh:
+                    content_hash = hashlib.sha256(fh.read()).hexdigest()
+            except OSError:
+                continue
+            entries.append(f"{rel}:{content_hash}")
+            if progress is not None:
+                progress.step(1)
         return hashlib.sha256("\n".join(entries).encode()).hexdigest()
 
     # ── File indexing ───────────────────────────────────────────────────
@@ -786,7 +800,8 @@ class CPGGraphBuilder:
         # ── Try cache ──────────────────────────────────────────────────
         if use_cache and cache_path.exists():
             try:
-                fingerprint = self._compute_source_fingerprint(root)
+                prog.stage("校验缓存指纹")
+                fingerprint = self._compute_source_fingerprint(root, progress=prog)
                 with cache_path.open("rb") as fh:
                     cached_fp, graph_data = pickle.load(fh)
                 if cached_fp == fingerprint:
@@ -821,20 +836,26 @@ class CPGGraphBuilder:
 
         # Index all files via CallGraphBuilder for import resolution
         prog.stage("索引文件")
-        for entry in sorted(root.rglob("*")):
-            if not entry.is_file():
-                continue
-            if any(p.startswith(".") or p == "__pycache__" for p in entry.parts):
-                continue
-            # BUG 31: 只索引解析器已初始化的语言，否则单语言扫描（--language java）
-            # 会撞上目录里的 .js/.py 文件，parse_file 时抛
-            # "Parser for 'javascript' not initialised"。
-            if detect_by_extension(str(entry)) in self._parser.providers:
-                self._call_graph_builder.add_file(str(entry))
+        # 先物化清单再 set_total —— rglob 本身是轻量 stat，但 7 万文件项目上
+        # 索引这一趟也要几秒到十几秒，不给进度用户会以为卡死。
+        # BUG 31: 只索引解析器已初始化的语言，否则单语言扫描（--language java）
+        # 会撞上目录里的 .js/.py 文件，parse_file 时抛
+        # "Parser for 'javascript' not initialised"。
+        index_entries = [
+            entry
+            for entry in sorted(root.rglob("*"))
+            if entry.is_file()
+            and not any(p.startswith(".") or p == "__pycache__" for p in entry.parts)
+            and detect_by_extension(str(entry)) in self._parser.providers
+        ]
+        prog.set_total(len(index_entries))
+        for entry in index_entries:
+            self._call_graph_builder.add_file(str(entry))
+            prog.step(1)
 
         # Build cross-file call edges
         prog.stage("跨文件调用边")
-        cross_edges = self._call_graph_builder.build_calls()
+        cross_edges = self._call_graph_builder.build_calls(progress=prog)
 
         # 收集跨函数状态槽（类字段 / 模块全局名）—— 供 _add_state_bridge 使用。
         # 需要先看完全部文件再连边，故在 add_file 循环前单独解析一遍。
@@ -864,6 +885,7 @@ class CPGGraphBuilder:
 
         # Add cross-file CALLS edges
         prog.stage("跨文件连边")
+        prog.set_total(len(cross_edges))
         for edge in cross_edges:
             # BUG N: 旧实现只取 resolved_files[0] 做 CALLS 目标 —— 跨文件同名
             # 函数只连到一个，其余目标的 BFS 断链（漏报）。这里连到**每个**可达
@@ -912,6 +934,7 @@ class CPGGraphBuilder:
                 for tf in target_files:
                     callee_fid = _uid(NODE_FUNCTION, tf, edge.callee)
                     self.graph.add_edge(cid, callee_fid, edge_type=EDGE_CALLS)
+            prog.step(1)
 
         # 5 — Cross-function DATA_FLOW edges: connect caller argument
         # variable-refs to callee parameter nodes so the BFS can trace
@@ -934,7 +957,7 @@ class CPGGraphBuilder:
         prog.stage("写缓存")
         if use_cache:
             try:
-                fingerprint = self._compute_source_fingerprint(root)
+                fingerprint = self._compute_source_fingerprint(root, progress=prog)
                 with cache_path.open("wb") as fh:
                     pickle.dump((fingerprint, self.graph), fh, protocol=pickle.HIGHEST_PROTOCOL)
             except (pickle.PickleError, OSError):

@@ -82,12 +82,15 @@ def main(argv: list[str] | None = None) -> int:
             rules_paths = [str(auto)]
             print(f"自动加载额外规则目录: {auto}（用 --rules 可覆盖）")
 
-    # 项目概况：先让用户看到规模（语言文件数 / 总行数），再开始扫描
-    overview = _project_overview(args.directory)
+    # 控制台进度条：tty+rich → 双进度条；否则纯文本阶段日志（stderr）。
+    # 概况统计与扫描各用一个进度实例 —— 概况的条走完后要停掉、打印概况行，
+    # 再起扫描的条（rich Live 同流直印会互相覆盖，分开最稳）。
+    overview_progress = make_progress()
+    overview = _project_overview(args.directory, progress=overview_progress)
+    overview_progress.end()
     if overview:
         print(overview)
 
-    # 控制台进度条：tty+rich → 双进度条；否则纯文本阶段日志（stderr）。
     # 扫描无论成败都要收尾进度条，放 try/finally。
     progress = make_progress()
     try:
@@ -182,19 +185,25 @@ def _fmt_finding(f: Finding) -> str:
     )
 
 
-def _project_overview(directory: str | Path) -> str | None:
+def _project_overview(
+    directory: str | Path, progress: object | None = None
+) -> str | None:
     """统计源码目录的语言文件数与总行数（扫描前打印概况）。
 
     只统计受支持语言（java/python/javascript）。逐文件分块读，内存有界
     （内存铁律）。大项目会多一次全量读盘——正是为了让用户先看到规模再决定
     要不要继续，价值大于成本。
+
+    7 万文件级项目这一趟数行可能耗时几十秒：有 progress 时把它作为独立
+    「统计概况」阶段走进度条（先 rglob 数文件数 → set_total，再逐文件数行
+    step），不让终端在概况统计期间静止、让用户以为没反应。
     """
     from hyqsast.cpg.languages import detect_by_extension
 
     root = Path(directory)
+    # 第一趟：rglob 收集源码清单（轻量 stat，快）。数文件数要 set_total 用。
+    file_paths: list[Path] = []
     counts: dict[str, int] = {}
-    total_files = 0
-    total_lines = 0
     for entry in root.rglob("*"):
         if not entry.is_file():
             continue
@@ -204,12 +213,20 @@ def _project_overview(directory: str | Path) -> str | None:
         if not lang:
             continue
         counts[lang] = counts.get(lang, 0) + 1
-        total_files += 1
-        total_lines += _count_lines_fast(entry)
+        file_paths.append(entry)
     if not counts:
         return None
+    if progress is not None:
+        progress.setup(["统计概况"])
+        progress.begin("统计概况", total=len(file_paths))
+    # 第二趟：逐文件数行（大项目的主要耗时），带进度。
+    total_lines = 0
+    for fp in file_paths:
+        total_lines += _count_lines_fast(fp)
+        if progress is not None:
+            progress.step(1)
     langs = " · ".join(f"{k} {v} 个文件" for k, v in sorted(counts.items()))
-    return f"项目概况：{langs} · 共 {total_files} 个源码文件 / {total_lines:,} 行"
+    return f"项目概况：{langs} · 共 {len(file_paths)} 个源码文件 / {total_lines:,} 行"
 
 
 def _count_lines_fast(path: Path) -> int:

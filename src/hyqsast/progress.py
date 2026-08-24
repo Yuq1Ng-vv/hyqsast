@@ -248,7 +248,9 @@ class _PlainProgress(Progress):
         if self._cur >= 0:
             prev = self._phases[self._cur]
             self._emit(f"✓ {prev}（{_fmt_elapsed(time.time() - self._phase_t0)}）")
-            self._emit(f"✓ 全部完成（总用时 {_fmt_elapsed(time.time() - self._t0)}）")
+            # 单阶段实例（如 CLI 的「统计概况」预扫描）不算「全部完成」，不打印
+            if len(self._phases) > 1:
+                self._emit(f"✓ 全部完成（总用时 {_fmt_elapsed(time.time() - self._t0)}）")
 
     @staticmethod
     def _emit(msg: str) -> None:
