@@ -28,6 +28,10 @@ result = scan("/path/to/java/project", language="java")  # language 可省略（
 result.to_json("report.json")  # 完整报告 JSON
 result.to_canonical_json("report.canonical.json")  # 规范版（人工复核用）
 result.to_elements_json("report.elements.json")  # 污点元素清单（漏报排查用）
+# 以下三份为新增的聚合友好产物（可与上面几份自由取舍）
+result.to_flat_json("report.flat.json")  # 扁平版：接口列表 + 每条 finding 的 source/sink 点与纯接口
+result.to_canonical_route_json("report.canonical.route.json")  # 规范版变体，endpoint 只留纯接口 /cmd/exec
+result.to_canonical_agg_json("report.canonical.agg.json")  # 规范版变体，按 source+sink 聚合调用链
 
 for f in result.findings:
     print(f.vuln_type, f.severity, f.source.file_path, f.source.line)
@@ -42,8 +46,11 @@ for f in result.findings:
 
 ```bash
 uv run hyqsast /path/to/java/project --language java -o report.json
-# 生成 report.json 的同时自动写出 report.canonical.json（规范版）
-# 与 report.elements.json（污点元素清单）；加 --no-canonical / --no-elements 可分别关掉
+# 生成 report.json 的同时自动写出 report.canonical.json（规范版）、
+# report.elements.json（污点元素清单），以及三份聚合友好产物：
+# report.flat.json / report.canonical.route.json / report.canonical.agg.json。
+# 各自可用 --no-canonical / --no-elements / --no-flat / --no-canonical-route /
+# --no-canonical-agg 单独关掉，方便按需取舍。
 ```
 
 ## 离线执行（断网 / 无 uv venv）

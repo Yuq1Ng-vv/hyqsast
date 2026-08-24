@@ -258,6 +258,25 @@ class ScanSummary:
     truncated_categories: dict[str, int] = field(default_factory=dict)
 
 
+def _pure_route(m: EndpointMatch) -> str:
+    """取纯接口串（只留路由 ``/cmd/exec``）；``unmatched`` 返回空串。
+
+    供扁平版 / 接口精简 / 聚合版报告复用——这几类报告面向下游数据聚合，
+    endpoint 只保留接口本身，不带方法 / 文件 / 处理器信息。
+    """
+    return m.route if m.match != "unmatched" else ""
+
+
+def _node_ref_dict(n: NodeRef) -> dict:
+    """把 :class:`NodeRef` 转成纯 dict（source/sink 点，扁平/聚合报告复用）。"""
+    return {
+        "file_path": n.file_path,
+        "line": n.line,
+        "function": n.function,
+        "code": n.code,
+    }
+
+
 @dataclass
 class ScanResult:
     """``scan()`` 的顶层返回结构。"""
@@ -312,6 +331,101 @@ class ScanResult:
             ensure_ascii=False,
             indent=indent,
         )
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def to_flat_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
+        """序列化扁平版报告；给定 ``path`` 则落盘。
+
+        面向下游数据聚合：接口列表从主报告的 ``endpoints`` 挪到这里
+        （只留路由信息），每个 finding 只保留 source 点、sink 点和纯接口
+        （``endpoint: /cmd/exec``）。主报告 / 规范版 / 元素清单三份
+        原样保留，本文件是新增产物。
+        """
+        payload = {
+            "endpoints": [
+                {
+                    "route": ep.route,
+                    "methods": list(ep.methods),
+                    "handler_func": ep.handler_func,
+                    "file_path": ep.file_path,
+                    "line": ep.line,
+                }
+                for ep in self.endpoints
+            ],
+            "findings": [
+                {
+                    "id": f.id,
+                    "vuln_type": f.vuln_type,
+                    "severity": f.severity,
+                    "endpoint": _pure_route(f.endpoint),
+                    "source": _node_ref_dict(f.source),
+                    "sink": _node_ref_dict(f.sink),
+                }
+                for f in self.findings
+            ],
+        }
+        text = json.dumps(payload, ensure_ascii=False, indent=indent)
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def to_canonical_route_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
+        """序列化规范版报告的接口精简变体；给定 ``path`` 则落盘。
+
+        ``canonical_findings`` 与 ``findings`` 一一对应：把 ``endpoint``
+        字段换成纯接口（``endpoint: /cmd/exec``），去掉方法 / 文件 / 处理器
+        信息，供按接口聚合下游数据。
+        """
+        rows = [
+            {**asdict(c), "endpoint": _pure_route(f.endpoint)}
+            for c, f in zip(self.canonical_findings, self.findings, strict=False)
+        ]
+        text = json.dumps(rows, ensure_ascii=False, indent=indent)
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def to_canonical_agg_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
+        """序列化规范版报告的聚合变体；给定 ``path`` 则落盘。
+
+        按 source 点 + sink 点（``file:line``）都相同聚合：把同组各条
+        finding 的 ``call_chain`` 合并成 ``call_chains`` 字典
+        （``call_chain_1`` / ``call_chain_2`` …），并补上作为聚合键的
+        ``source`` / ``sink`` 点。同组内重复的调用链去重。
+        """
+        # 聚合键 = (source 点, sink 点)；canonical_findings 与 findings 一一对应。
+        key_t = tuple[tuple[str, int], tuple[str, int]]
+        groups: dict[key_t, list[tuple[CanonicalFinding, Finding]]] = {}
+        for c, f in zip(self.canonical_findings, self.findings, strict=False):
+            key = ((f.source.file_path, f.source.line), (f.sink.file_path, f.sink.line))
+            groups.setdefault(key, []).append((c, f))
+
+        rows: list[dict] = []
+        for members in groups.values():
+            first_c, first_f = members[0]
+            seen: set[str] = set()
+            call_chains: dict[str, str] = {}
+            for c, _ in members:
+                if c.call_chain in seen:
+                    continue
+                seen.add(c.call_chain)
+                call_chains[f"call_chain_{len(call_chains) + 1}"] = c.call_chain
+            rows.append(
+                {
+                    "id": first_c.id,
+                    "vuln_type": first_c.vuln_type,
+                    "vuln_name": first_c.vuln_name,
+                    "endpoint": _pure_route(first_f.endpoint),
+                    "source": _node_ref_dict(first_f.source),
+                    "sink": _node_ref_dict(first_f.sink),
+                    "sink_function": first_c.sink_function,
+                    "call_chains": call_chains,
+                }
+            )
+
+        text = json.dumps(rows, ensure_ascii=False, indent=indent)
         if path is not None:
             Path(path).write_text(text, encoding="utf-8")
         return text

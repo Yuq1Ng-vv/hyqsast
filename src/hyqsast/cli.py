@@ -44,6 +44,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="不生成污点元素清单（默认与 -o 一并写出 <stem>.elements.json，供漏报排查）",
     )
+    parser.add_argument(
+        "--no-flat",
+        action="store_true",
+        help="不生成扁平版报告（默认写出 <stem>.flat.json：接口列表 + source/sink 点，供聚合）",
+    )
+    parser.add_argument(
+        "--no-canonical-route",
+        action="store_true",
+        help="不生成接口精简规范版（默认写出 <stem>.canonical.route.json，endpoint 只留纯接口）",
+    )
+    parser.add_argument(
+        "--no-canonical-agg",
+        action="store_true",
+        help="不生成聚合规范版（默认写出 <stem>.canonical.agg.json，按 source+sink 聚合调用链）",
+    )
     parser.add_argument("--no-blind-spots", action="store_true", help="不输出盲区清单")
     parser.add_argument("--no-cache", action="store_true", help="强制重建 CPG 图，忽略缓存")
     parser.add_argument(
@@ -120,6 +135,18 @@ def main(argv: list[str] | None = None) -> int:
             src_n = sum(1 for e in result.taint_elements if e.kind == "source")
             sink_n = sum(1 for e in result.taint_elements if e.kind == "sink")
             print(f"污点元素清单已写入: {elements_path}  (sources: {src_n}  sinks: {sink_n})")
+        if not args.no_flat:
+            flat_path = output.with_name(f"{output.stem}.flat{output.suffix}")
+            result.to_flat_json(flat_path)
+            print(f"扁平版报告已写入: {flat_path}  (findings: {len(result.findings)})")
+        if not args.no_canonical_route:
+            route_path = output.with_name(f"{output.stem}.canonical.route{output.suffix}")
+            result.to_canonical_route_json(route_path)
+            print(f"接口精简规范版报告已写入: {route_path}")
+        if not args.no_canonical_agg:
+            agg_path = output.with_name(f"{output.stem}.canonical.agg{output.suffix}")
+            result.to_canonical_agg_json(agg_path)
+            print(f"聚合规范版报告已写入: {agg_path}")
 
     return 0
 
