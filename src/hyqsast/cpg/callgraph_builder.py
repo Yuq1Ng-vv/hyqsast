@@ -180,6 +180,7 @@ class CallGraphBuilder:
                     imp.module,
                     base_dir,
                     file_index,
+                    detect_by_extension(file_path) or "java",
                 )
                 if target is not None and target in self._graphs:
                     # Map each imported name to the target file
@@ -215,6 +216,16 @@ class CallGraphBuilder:
         供 CPGGraphBuilder.add_directory 的「跨文件调用边」阶段实时出 ETA。
         """
         resolved_imports = self.resolve_imports()
+
+        # 全局反向索引：target 文件 → 所有指向它的 qualified 名（_is_reachable 用）。
+        # 原实现每个候选扫整个 resolved_imports（O(R)），这里预建一次 O(R) 的
+        # target→quals 索引，候选检查只遍历该 target 的少数 qualified 名（通常
+        # 1-5 个，绝大多数 import 不可解析则空）——布尔结果与迭代顺序无关，语义
+        # 完全一致，内存 O(R)（不按调用方存集合，7 万文件项目下内存安全）。
+        quals_by_target: dict[str, set[str]] = {}
+        for _q, _t in resolved_imports.items():
+            quals_by_target.setdefault(_t, set()).add(_q)
+
         cross_edges: list[CallEdge] = []
 
         # BUG 54: 每文件 alias→模块 表（``import X as Y`` 的 Y）。receiver 解析用：
@@ -278,7 +289,7 @@ class CallGraphBuilder:
                     receiver,
                     receiver_type,
                     imported_modules,
-                    resolved_imports,
+                    quals_by_target,
                     alias_to_module,
                     alias_ambiguous,
                     file_index,
@@ -365,7 +376,7 @@ class CallGraphBuilder:
         receiver: str | None,
         receiver_type: str | None,
         imported_modules: set[str],
-        resolved_imports: dict[str, str],
+        quals_by_target: dict[str, set[str]],
         alias_to_module: dict[str, dict[str, str]],
         alias_ambiguous: dict[str, set[str]],
         file_index: dict[str, list[str]],
@@ -392,6 +403,7 @@ class CallGraphBuilder:
                     module,
                     str(Path(file_path).parent),
                     file_index,
+                    detect_by_extension(file_path) or "java",
                 )
                 if target is not None and target in candidates:
                     receiver_candidates = [target]
@@ -415,7 +427,7 @@ class CallGraphBuilder:
             same_dir = is_java and os.path.dirname(target_file) == caller_dir
 
             if same_dir or self._is_reachable(
-                file_path, target_file, imported_modules, resolved_imports
+                target_file, imported_modules, quals_by_target
             ):
                 reachable_files.append(target_file)
 
@@ -717,8 +729,9 @@ class CallGraphBuilder:
         module: str,
         base_dir: str,
         file_index: dict[str, list[str]],
+        lang: str = "java",
     ) -> str | None:
-        """Convert a module name to a file path（带 (module, base_dir) 记忆化）。
+        """Convert a module name to a file path（带 (module, base_dir, lang) 记忆化）。
 
         Python
             ``".utils"`` → ``base_dir/../utils.py``
@@ -737,10 +750,10 @@ class CallGraphBuilder:
         完整个目录逐级向上 + 多扩展名 ``exists()`` 探测（几十次 stat 系统调用），
         大型项目百万级调用；缓存后只算一次。
         """
-        key = (module, base_dir)
+        key = (module, base_dir, lang)
         if key in self._resolve_cache:
             return self._resolve_cache[key]
-        result = self._resolve_module_path_uncached(module, base_dir, file_index)
+        result = self._resolve_module_path_uncached(module, base_dir, file_index, lang)
         self._resolve_cache[key] = result
         return result
 
@@ -749,6 +762,7 @@ class CallGraphBuilder:
         module: str,
         base_dir: str,
         file_index: dict[str, list[str]],
+        lang: str = "java",
     ) -> str | None:
         """Convert a module name to a file path（无缓存，_resolve_module_path 的底层）。
 
@@ -808,23 +822,34 @@ class CallGraphBuilder:
         # ── Absolute module paths ──────────────────────────────────────
         parts = module.split(".")
 
+        # 语言感知探测：java 只找 .java，python 找 .py + __init__.py，js 保持全
+        # 探测。原实现对每次 walk 的每一级都额外做 __init__.py + .js/.ts/.mjs
+        # index 探测——java/python 调用方用不上，纯浪费（每级 5 次 probe → 1-2
+        # 次）。对不可解析模块（冷解析主成本）~3-5 倍 stat 减负。
+        src_exts = {
+            "java": (".java",),
+            "python": (".py",),
+        }.get(lang, CallGraphBuilder._SRC_EXTS)
+
         # Walk up from base_dir, try *every* source-root
         # so we match the nearest parent directory.
         current = Path(base_dir)
         while current != current.parent:
-            for ext in CallGraphBuilder._SRC_EXTS:
+            for ext in src_exts:
                 candidate = current / (str(Path(*parts)) + ext)
                 if candidate.exists():
                     return str(candidate.resolve())
-            # Package init (Python)
-            candidate_init = current / str(Path(*parts)) / "__init__.py"
-            if candidate_init.exists():
-                return str(candidate_init.resolve())
-            # Index files (JS/TS package entry)
-            for ext in (".js", ".ts", ".mjs"):
-                candidate_index = current / str(Path(*parts)) / ("index" + ext)
-                if candidate_index.exists():
-                    return str(candidate_index.resolve())
+            # Package init (Python only)
+            if lang == "python":
+                candidate_init = current / str(Path(*parts)) / "__init__.py"
+                if candidate_init.exists():
+                    return str(candidate_init.resolve())
+            # Index files (JS/TS package entry only)
+            if lang == "javascript":
+                for ext in (".js", ".ts", ".mjs"):
+                    candidate_index = current / str(Path(*parts)) / ("index" + ext)
+                    if candidate_index.exists():
+                        return str(candidate_index.resolve())
             current = current.parent
 
         # ── Fallback: match by class name / module basename ────────────
@@ -845,19 +870,23 @@ class CallGraphBuilder:
 
     @staticmethod
     def _is_reachable(
-        caller_file: str,
         target_file: str,
         imported_modules: set[str],
-        resolved_imports: dict[str, str],
+        quals_by_target: dict[str, set[str]],
     ) -> bool:
-        """Check if *caller_file* can reach *target_file* via imports."""
-        # Direct resolution: check if any resolved import points to target
-        for qualified, resolved_path in resolved_imports.items():
-            if resolved_path == target_file:
-                # Check if the caller imports some part of this module
-                for mod in imported_modules:
-                    if qualified.startswith(mod) or mod == qualified:
-                        return True
+        """Check if the caller（其 ``imported_modules``）can reach *target_file*.
+
+        语义与原版逐项等价：target 可达 ⟺ 存在指向它的 qualified 名 q，且调用方
+        导入的某模块 m 满足 ``q.startswith(m) or m == q``。原版每个候选扫整个全局
+        resolved_imports（O(R)），这里用 build_calls 预建的 ``quals_by_target``
+        反向索引，只遍历该 target 的少数 qualified 名（通常 1-5 个）——布尔结果
+        与遍历顺序无关，所以用 set 收集也恒等。
+        """
+        for qualified in quals_by_target.get(target_file, ()):
+            # Check if the caller imports some part of this module
+            for mod in imported_modules:
+                if qualified.startswith(mod) or mod == qualified:
+                    return True
         return False
 
 
