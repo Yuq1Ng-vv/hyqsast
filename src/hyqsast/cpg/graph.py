@@ -29,6 +29,7 @@ from hyqsast.cpg.callgraph import SingleFileCallGraph
 from hyqsast.cpg.cfg import CFGBuilder
 from hyqsast.cpg.dataflow import DataFlowBuilder
 from hyqsast.cpg.traversal import Traverser
+from hyqsast.progress import Progress
 
 if TYPE_CHECKING:
     from hyqsast.cpg.callgraph_builder import CallGraphBuilder
@@ -749,7 +750,12 @@ class CPGGraphBuilder:
         if self._taint_loader is not None:
             self._label_taint_nodes(path, language)
 
-    def add_directory(self, dir_path: str | Path, use_cache: bool = True) -> None:
+    def add_directory(
+        self,
+        dir_path: str | Path,
+        use_cache: bool = True,
+        progress: Progress | None = None,
+    ) -> None:
         """Recursively add all source files in *dir_path*.
 
         Uses :class:`CallGraphBuilder` for cross-file import resolution.
@@ -758,10 +764,14 @@ class CPGGraphBuilder:
         to ``~/.cache/hyqsast/cpg/<hash>.pkl`` and reused on subsequent
         calls as long as the file list hasn't changed.  Set to False to
         force a fresh build.
+
+        ``progress``（可选）：建图内的子阶段进度上报（索引文件 / 解析建图 /
+        连边 / 写缓存），默认 no-op。总步数按文件数补设（索引完才知道数量）。
         """
         from hyqsast.cpg.callgraph_builder import CallGraphBuilder
         from hyqsast.cpg.languages import detect_by_extension
 
+        prog = progress if progress is not None else Progress()
         root = Path(dir_path).resolve()
         # 漏报面 G 类：缓存 key 拼入 language + rules 指纹 —— 换语言/换规则
         # 不得复用旧图；改引擎结构边（def-use/容器桥接）靠 bump 版本号。
@@ -795,10 +805,13 @@ class CPGGraphBuilder:
                     # Re-label taint nodes when loader is present
                     # (cache was built without labels or with different rules)
                     if self._taint_loader is not None:
+                        prog.stage("恢复缓存并重标 taint 点")
+                        prog.set_total(len(self._indexed_files))
                         for fpath in sorted(self._indexed_files):
                             lang = detect_by_extension(fpath)
                             if lang:
                                 self._label_taint_nodes(fpath, lang)
+                            prog.step(1)
                     return
             except (pickle.PickleError, EOFError, KeyError, OSError, ValueError, TypeError):
                 pass  # Corrupted cache — rebuild
@@ -807,6 +820,7 @@ class CPGGraphBuilder:
         self._call_graph_builder = CallGraphBuilder(self._parser)
 
         # Index all files via CallGraphBuilder for import resolution
+        prog.stage("索引文件")
         for entry in sorted(root.rglob("*")):
             if not entry.is_file():
                 continue
@@ -819,30 +833,37 @@ class CPGGraphBuilder:
                 self._call_graph_builder.add_file(str(entry))
 
         # Build cross-file call edges
+        prog.stage("跨文件调用边")
         cross_edges = self._call_graph_builder.build_calls()
 
         # 收集跨函数状态槽（类字段 / 模块全局名）—— 供 _add_state_bridge 使用。
         # 需要先看完全部文件再连边，故在 add_file 循环前单独解析一遍。
+        prog.stage("收集跨函数状态槽")
+        prog.set_total(len(self._call_graph_builder.files))
         self._state_slots = set()
         for file_path in self._call_graph_builder.files:
             lang = detect_by_extension(file_path)
-            if lang not in self._parser.providers:
-                continue
-            try:
-                tree = self._parser.parse_file(file_path)
-            except (OSError, ValueError, FileNotFoundError):
-                continue
-            provider = self._parser.get_provider(lang)
-            self._state_slots |= provider.collect_state_slots(tree)
+            if lang in self._parser.providers:
+                try:
+                    tree = self._parser.parse_file(file_path)
+                    provider = self._parser.get_provider(lang)
+                    self._state_slots |= provider.collect_state_slots(tree)
+                except (OSError, ValueError, FileNotFoundError):
+                    pass
+            prog.step(1)
 
         # Add each file's local information to the graph
         import contextlib
 
+        prog.stage("解析源码并建图（含 source/sink 点标记）")
+        prog.set_total(len(self._call_graph_builder.files))
         for file_path in sorted(self._call_graph_builder.files):
             with contextlib.suppress(OSError, ValueError, FileNotFoundError):
                 self.add_file(file_path)
+            prog.step(1)
 
         # Add cross-file CALLS edges
+        prog.stage("跨文件连边")
         for edge in cross_edges:
             # BUG N: 旧实现只取 resolved_files[0] 做 CALLS 目标 —— 跨文件同名
             # 函数只连到一个，其余目标的 BFS 断链（漏报）。这里连到**每个**可达
@@ -910,6 +931,7 @@ class CPGGraphBuilder:
             self._add_state_bridge()
 
         # ── Save to cache ──────────────────────────────────────────────
+        prog.stage("写缓存")
         if use_cache:
             try:
                 fingerprint = self._compute_source_fingerprint(root)

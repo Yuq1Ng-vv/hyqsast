@@ -28,6 +28,7 @@ from hyqsast.cpg.graph import (
 from hyqsast.cpg.languages import detect_by_extension
 from hyqsast.cpg.parser import Parser
 from hyqsast.cpg.taint_loader import TaintRuleLoader
+from hyqsast.progress import PHASES, Progress
 from hyqsast.schema import (
     BlindSpot,
     CanonicalFinding,
@@ -106,7 +107,10 @@ class Analyzer:
         *,
         enable_container_bridge: bool = False,
         enable_state_bridge: bool = False,
+        progress: Progress | None = None,
     ) -> None:
+        # 进度上报（默认 no-op；CLI 传 rich 渲染器，MCP 等 stdout 承载协议不传）
+        self.progress = progress or Progress()
         self.directory = Path(directory).resolve()
         if not self.directory.is_dir():
             raise NotADirectoryError(f"目录不存在或不可读: {self.directory}")
@@ -141,18 +145,40 @@ class Analyzer:
 
     def run(self) -> ScanResult:
         """执行完整扫描，返回结构化结果。"""
-        self.graph_builder.add_directory(self.directory, use_cache=self.use_cache)
+        # 进度上报：只在阶段边界与长循环里上报，渲染细节见 progress.py
+        prog = self.progress
+        prog.setup(list(PHASES))
 
+        prog.begin("建图")
+        self.graph_builder.add_directory(self.directory, use_cache=self.use_cache, progress=prog)
+
+        prog.begin("接口提取")
         endpoints = self._extract_endpoints()
+        prog.stage("注入路由参数 source")
         self._inject_route_param_sources(endpoints)
+
+        prog.begin("污点传播")
         findings = self._build_findings()
+        prog.stage("关联接口")
         self._link_findings(findings, endpoints)
+
+        prog.begin("汇总", total=4)
+        prog.stage("盲区清单")
         blind_spots = self._build_blind_spots(endpoints) if self.include_blind_spots else []
+        prog.step(1)
+        prog.stage("规范版报告")
         canonical = self._build_canonical_findings(findings)
+        prog.step(1)
+        prog.stage("污点元素清单")
         taint_elements = self._collect_taint_elements(findings)
+        prog.step(1)
+        prog.stage("汇总计数")
+        summary = self._summarize(endpoints, findings, blind_spots)
+        prog.step(1)
+        prog.end()
 
         return ScanResult(
-            summary=self._summarize(endpoints, findings, blind_spots),
+            summary=summary,
             endpoints=endpoints,
             findings=findings,
             blind_spots=blind_spots,
@@ -166,6 +192,9 @@ class Analyzer:
         """用框架提取器枚举 HTTP 接口。"""
         files = self._source_files()
         result: list[Endpoint] = []
+        prog = self.progress
+        prog.stage("提取接口")
+        prog.set_total(len(files) * len(self.frameworks))
 
         for fw_name in self.frameworks:
             extractor = get_extractor(fw_name, self.parser)
@@ -175,7 +204,8 @@ class Analyzer:
                         for ep in extractor.extract_routes(file_path):
                             result.append(self._to_endpoint(ep))
                 except (OSError, ValueError):
-                    continue
+                    pass
+                prog.step(1)
 
         result.sort(key=lambda e: (e.file_path, e.line))
         return result
@@ -240,9 +270,13 @@ class Analyzer:
         per_category: dict[str, int] = defaultdict(int)
         # P0-2: 记录每个类别因上限被跳过的候选数（供截断可见化）
         skipped: dict[str, int] = defaultdict(int)
+        prog = self.progress
 
         if source_ids and sink_set:
+            prog.stage("源点前向 BFS")
+            prog.set_total(len(source_ids))
             for src in source_ids:
+                prog.step(1)
                 if per_category and all(
                     c >= self.max_findings_per_category for c in per_category.values()
                 ):
@@ -279,6 +313,7 @@ class Analyzer:
                         findings.append(finding)
 
         # P1-5: 相同 (src,sink) 的多类别候选合并为一条主 finding
+        prog.stage("聚合多类别")
         findings = self._aggregate_multi_category(findings)
 
         # 非污点流 pattern 型漏洞（taint_rules.yaml 的 ``pattern_sinks`` 标记，
@@ -291,6 +326,7 @@ class Analyzer:
         # covered 集，pattern 型发现里同一位置命中同类别的节点就跳过（如某测试
         # 的 Cipher.getInstance("DES…") 已由 taint 型 crypto_weakness 报过，就不
         # 再补一条 weak_crypto，避免 ~217 个已命中测试各多一条重复）。
+        prog.stage("pattern 型漏洞")
         covered: set[tuple[str, int, str]] = set()
         for f in findings:
             if f.sink and f.sink.file_path and f.sink.line:

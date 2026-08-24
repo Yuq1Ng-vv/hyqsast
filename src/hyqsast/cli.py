@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from hyqsast import scan
+from hyqsast.progress import make_progress
 from hyqsast.schema import Finding
 
 
@@ -81,17 +82,29 @@ def main(argv: list[str] | None = None) -> int:
             rules_paths = [str(auto)]
             print(f"自动加载额外规则目录: {auto}（用 --rules 可覆盖）")
 
-    result = scan(
-        directory=args.directory,
-        language=args.language,
-        framework=args.framework,
-        max_findings_per_category=args.max_findings,
-        include_blind_spots=not args.no_blind_spots,
-        use_cache=not args.no_cache,
-        rules_paths=rules_paths,
-        enable_container_bridge=args.enable_container_bridge,
-        enable_state_bridge=args.enable_state_bridge,
-    )
+    # 项目概况：先让用户看到规模（语言文件数 / 总行数），再开始扫描
+    overview = _project_overview(args.directory)
+    if overview:
+        print(overview)
+
+    # 控制台进度条：tty+rich → 双进度条；否则纯文本阶段日志（stderr）。
+    # 扫描无论成败都要收尾进度条，放 try/finally。
+    progress = make_progress()
+    try:
+        result = scan(
+            directory=args.directory,
+            language=args.language,
+            framework=args.framework,
+            max_findings_per_category=args.max_findings,
+            include_blind_spots=not args.no_blind_spots,
+            use_cache=not args.no_cache,
+            rules_paths=rules_paths,
+            enable_container_bridge=args.enable_container_bridge,
+            enable_state_bridge=args.enable_state_bridge,
+            progress=progress,
+        )
+    finally:
+        progress.end()
 
     s = result.summary
     print(
@@ -167,6 +180,45 @@ def _fmt_finding(f: Finding) -> str:
         f"    chain:  {len(f.call_chain)} 步"
         + (f"  (sanitized: {','.join(f.sanitizers)})" if f.sanitized else "")
     )
+
+
+def _project_overview(directory: str | Path) -> str | None:
+    """统计源码目录的语言文件数与总行数（扫描前打印概况）。
+
+    只统计受支持语言（java/python/javascript）。逐文件分块读，内存有界
+    （内存铁律）。大项目会多一次全量读盘——正是为了让用户先看到规模再决定
+    要不要继续，价值大于成本。
+    """
+    from hyqsast.cpg.languages import detect_by_extension
+
+    root = Path(directory)
+    counts: dict[str, int] = {}
+    total_files = 0
+    total_lines = 0
+    for entry in root.rglob("*"):
+        if not entry.is_file():
+            continue
+        if any(p.startswith(".") or p == "__pycache__" for p in entry.parts):
+            continue
+        lang = detect_by_extension(str(entry))
+        if not lang:
+            continue
+        counts[lang] = counts.get(lang, 0) + 1
+        total_files += 1
+        total_lines += _count_lines_fast(entry)
+    if not counts:
+        return None
+    langs = " · ".join(f"{k} {v} 个文件" for k, v in sorted(counts.items()))
+    return f"项目概况：{langs} · 共 {total_files} 个源码文件 / {total_lines:,} 行"
+
+
+def _count_lines_fast(path: Path) -> int:
+    """分块数换行符，避免逐行 Python 迭代（大文件更快、内存有界）。"""
+    n = 0
+    with path.open("rb") as fh:
+        while chunk := fh.read(1 << 16):
+            n += chunk.count(b"\n")
+    return n
 
 
 if __name__ == "__main__":

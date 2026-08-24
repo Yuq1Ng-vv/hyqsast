@@ -34,7 +34,7 @@ uv run ruff check .
 uv run ruff format .
 ```
 
-依赖仅 6 个轻量包：`tree-sitter`、`tree-sitter-python/java/javascript`、`networkx`、`pyyaml`。**不要**引入 LLM / langgraph / 报告栈等重依赖。
+依赖仅 6 个轻量包 + `rich`（仅 CLI 控制台进度条，分析逻辑零依赖它）：`tree-sitter`、`tree-sitter-python/java/javascript`、`networkx`、`pyyaml`。**不要**引入 LLM / langgraph / 报告栈等重依赖。`rich` 不进离线 vendor/（`scripts/build_vendor.py`），离线/断网机器上 CLI 守卫回退纯文本阶段日志（`progress.py` 的 `_PlainProgress`，写 stderr 不污染 stdout）；MCP 走 stdio，stdout 是 JSON-RPC 信道，**一律不传 progress**（默认 no-op）。进度上报接口见 `src/hyqsast/progress.py`：Analyzer 只在阶段边界/长循环上报，总条按时间权重爬（`_PHASE_WEIGHTS`）供 ETA 外推。
 
 **离线/跨平台执行（断网机器上跑整个工具）**：依赖打包进 `vendor/`（gitignored，`scripts/build_vendor.py` 构建，支持 linux/win/mac 交叉构建），离线机只要系统 python 3.12：`python3 scripts/hyqsast.py <项目> --language java`（启动器自动挂 PYTHONPATH）。详见 README「离线执行」节。改动 offline 相关代码时保持 `python -m hyqsast` + PYTHONPATH 可跑、不依赖 venv。
 

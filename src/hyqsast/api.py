@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from hyqsast.analyzer import Analyzer
+from hyqsast.progress import Progress
 from hyqsast.schema import ScanResult
 
 __all__ = ["scan"]
@@ -29,6 +30,7 @@ def scan(
     *,
     enable_container_bridge: bool = False,
     enable_state_bridge: bool = False,
+    progress: Progress | None = None,
 ) -> ScanResult:
     """扫描一个源码目录，返回接口 / 漏洞类型 / 调用链的结构化结果。
 
@@ -48,6 +50,8 @@ def scan(
             OWASP 开/关回归对比。
         enable_state_bridge: 开启「跨函数状态桥接」启发式（默认关）。默认关
             会牺牲漏报面 J 类（模块全局/静态/实例字段跨函数写读）的召回。
+        progress: 进度上报接口（默认 no-op）。CLI 传控制台渲染器；MCP 等
+            stdout 承载 JSON-RPC 协议的调用方**不要传**，避免污染输出。
 
     Returns:
         :class:`ScanResult`，可用 ``.to_json(path)`` 落盘。
@@ -63,4 +67,5 @@ def scan(
         rules_paths=rules_paths,
         enable_container_bridge=enable_container_bridge,
         enable_state_bridge=enable_state_bridge,
+        progress=progress,
     ).run()

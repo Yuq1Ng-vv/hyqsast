@@ -12,10 +12,12 @@
 
 ```bash
 cd ~/hyqsast
-uv sync              # 只装 6 个轻依赖，无 LLM / langgraph / 报告栈
+uv sync              # 只装轻依赖，无 LLM / langgraph / 报告栈
 ```
 
-依赖仅：`tree-sitter`、`tree-sitter-python/java/javascript`、`networkx`、`pyyaml`。
+依赖仅：`tree-sitter`、`tree-sitter-python/java/javascript`、`networkx`、`pyyaml`、
+外加 `rich`（仅控制台进度条，分析逻辑零依赖它）。离线 vendor/ 不打包 rich，
+断网机器上 CLI 自动退化为纯文本阶段日志（写 stderr，不污染 stdout）。
 
 ## 快速开始
 
@@ -52,6 +54,11 @@ uv run hyqsast /path/to/java/project --language java -o report.json
 # 各自可用 --no-canonical / --no-elements / --no-flat / --no-canonical-route /
 # --no-canonical-agg 单独关掉，方便按需取舍。
 ```
+
+控制台体验：扫描前打印**项目概况**（各语言文件数 + 总行数）；扫描中显示
+**双进度条**（总进度带阶段节点 ✓建图→接口→污点→汇总，+ 当前阶段条，均含
+已用时间 / 预计剩余，ETA 为线性外推的预估值）。终端是 tty 时用 rich 富渲染，
+非 tty / 离线 vendor 退化为纯文本阶段日志。
 
 ## 离线执行（断网 / 无 uv venv）
 

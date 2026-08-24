@@ -12,7 +12,9 @@ license = { text = "MIT" }
 authors = [{ name = "HyqSast" }]
 keywords = ["security", "sast", "taint-analysis", "cpg", "code-audit"]
 
-# 只保留 CPG 确定性分析所需的轻量依赖 —— 不含 LLM / langgraph / 报告栈
+# 只保留 CPG 确定性分析所需的轻量依赖 —— 不含 LLM / langgraph / 报告栈。
+# rich 仅用于 CLI 控制台进度条（分析逻辑零依赖它）：离线 vendor/ 不打包 rich，
+# cli 里守卫回退纯文本阶段日志，离线执行不受影响（见 scripts/build_vendor.py）。
 dependencies = [
     "tree-sitter>=0.25,<0.27",
     "tree-sitter-python>=0.25.0",
@@ -20,6 +22,7 @@ dependencies = [
     "tree-sitter-java>=0.23.5",
     "networkx>=3.4",
     "pyyaml>=6.0",
+    "rich>=13.7",
 ]
 
 [project.optional-dependencies]
