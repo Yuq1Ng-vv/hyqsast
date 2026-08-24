@@ -36,6 +36,7 @@ try:
     from rich.console import Console
     from rich.progress import (
         BarColumn,
+        ProgressColumn,
         TextColumn,
         TimeElapsedColumn,
         TimeRemainingColumn,
@@ -43,9 +44,34 @@ try:
     from rich.progress import (
         Progress as RichBar,
     )
+    from rich.text import Text
+
+    class _EtaColumn(ProgressColumn):
+        """双任务 ETA 列：总体条走时间权重外推，阶段条走 rich 原生采样。
+
+        总体条不能直接用 rich 自带 TimeRemainingColumn：权重爬满后 completed
+        平台化（如建图的 55% 在索引文件阶段就爬完）→ 无新 speed 样本 → ETA
+        冻结在旧值（「还剩 8 秒」卡住 7 分钟）。本列对总体任务每次渲染按最新
+        权重完成度重算；阶段任务则委托 TimeRemainingColumn（每子阶段 reset
+        后样本新鲜，原生 ETA 可用）。
+        """
+
+        def __init__(self, overall_eta_func: object) -> None:
+            super().__init__()
+            self._overall_eta_func = overall_eta_func
+            self.overall_id: int | None = None
+            self._rich_remaining = TimeRemainingColumn()
+
+        def render(self, task: object) -> Text:
+            if task.id == self.overall_id:
+                eta = self._overall_eta_func()
+                return Text(eta or "-:--:--", style="progress.remaining")
+            return self._rich_remaining.render(task)
+
 except ImportError:  # pragma: no cover —— 离线 vendor 环境触发
     Console = None  # type: ignore[assignment,misc]
     BarColumn = TextColumn = TimeElapsedColumn = TimeRemainingColumn = None  # type: ignore[assignment]
+    ProgressColumn = Text = None  # type: ignore[assignment]
     RichBar = None  # type: ignore[assignment]
 
 
@@ -103,13 +129,16 @@ class _RichProgress(Progress):
     def __init__(self, stream: object) -> None:
         super().__init__()
         self._console = Console(file=stream, highlight=False)
+        # 自定义 ETA 列（总体走权重外推，见 _EtaColumn 注释）；overall_id 在
+        # 两个任务 add 完之后补设。
+        self._eta_col = _EtaColumn(self._overall_eta)
         cols = [
             TextColumn("{task.description}", markup=True),
             BarColumn(bar_width=None),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TimeElapsedColumn(),
             TextColumn("·"),
-            TimeRemainingColumn(),
+            self._eta_col,
         ]
         self._bar = RichBar(
             *cols,
@@ -119,16 +148,23 @@ class _RichProgress(Progress):
         # 总体任务 total=100（权重单位）；当前阶段任务 total 随阶段补设
         self._overall_id = self._bar.add_task("", total=100, completed=0)
         self._phase_id = self._bar.add_task("", total=None)
+        self._eta_col.overall_id = self._overall_id
+        self._t0 = 0.0
         self._phases: list[str] = []
         self._cur = -1
         self._phase_done = 0
         self._phase_total: int | None = None
+        # 当前阶段内已完成的子阶段链（stage() 累计，不替换丢失）+
+        # 当前子阶段标签
+        self._stage_chain: list[str] = []
+        self._stage_current: str | None = None
         self._ended = False
 
     # ── Progress 接口 ─────────────────────────────────────────────────
 
     def setup(self, phases: list[str] | None = None) -> None:
         self._phases = list(phases or [])
+        self._t0 = time.monotonic()
         self._bar.update(self._overall_id, description=self._nodes())
         self._bar.start()
 
@@ -138,19 +174,28 @@ class _RichProgress(Progress):
         self._cur = self._phases.index(phase)
         self._phase_done = 0
         self._phase_total = total
+        self._stage_chain = []
+        self._stage_current = None
         self._bar.update(
             self._overall_id,
             completed=self._overall_completed(),
             description=self._nodes(),
         )
-        self._bar.reset(self._phase_id, total=total, description=self._phase_desc(phase))
+        self._bar.reset(self._phase_id, total=total, description=self._phase_desc())
 
     def stage(self, label: str) -> None:
-        self._bar.update(self._phase_id, description=self._phase_desc(label))
+        # 上一个子阶段收进已完成链 —— 阶段条累计显示，不替换丢失
+        if self._stage_current is not None:
+            self._stage_chain.append(self._stage_current)
+        self._stage_current = label
+        self._bar.update(self._phase_id, description=self._phase_desc())
 
     def set_total(self, n: int) -> None:
         self._phase_total = n
-        self._bar.update(self._phase_id, total=n)
+        # reset（而非 update）：同一阶段内跨子阶段切换（索引→连边各有 total）
+        # 时 completed 必须清零重爬——否则上一子阶段爬满 100% 后下一子阶段仍
+        # 显示 100%（视觉假象）。reset 同时清空 speed 样本 → 子阶段 ETA 新鲜。
+        self._bar.reset(self._phase_id, total=n, description=self._phase_desc())
 
     def step(self, n: int = 1) -> None:
         self._phase_done += n
@@ -175,8 +220,14 @@ class _RichProgress(Progress):
 
     # ── 内部 ──────────────────────────────────────────────────────────
 
-    def _phase_desc(self, label: str) -> str:
-        return f"[bold cyan]本阶段[/bold cyan] {label}"
+    def _phase_desc(self) -> str:
+        """阶段条描述：已完成子阶段（✓）+ 当前子阶段（▶），累计不替换。"""
+        parts = ["[bold cyan]本阶段[/bold cyan]"]
+        for done in self._stage_chain:
+            parts.append(f"[green]✓[/green] {done}")
+        if self._stage_current:
+            parts.append(f"[bold yellow]▶[/bold yellow] {self._stage_current}")
+        return "  ".join(parts)
 
     def _nodes(self, final: bool = False) -> str:
         """阶段节点链：✓ 已完成 / ▶ 进行中 / ○ 未开始。"""
@@ -206,6 +257,21 @@ class _RichProgress(Progress):
         else:
             frac = 0.0  # 不定长阶段（兜底）：保持不动，end() 再拉满
         return (base + w * frac) * 100.0 / total
+
+    def _overall_eta(self) -> str | None:
+        """总体 ETA：``已用 × (1 - 完成度) / 完成度`` 线性外推。
+
+        不能依赖 rich 采样（见 _EtaColumn 注释）：权重爬满后 completed 平台化
+        → 无新 speed 样本 → 自带 TimeRemainingColumn 冻结在旧值。这里每次
+        渲染按最新权重完成度重算，ETA 一直动。
+        """
+        c = self._overall_completed()
+        if c <= 0 or not self._t0:
+            return None
+        elapsed = time.monotonic() - self._t0
+        if elapsed <= 0:
+            return None
+        return _fmt_elapsed(elapsed * (100.0 - c) / c)
 
 
 class _PlainProgress(Progress):
