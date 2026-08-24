@@ -1282,11 +1282,21 @@ class CPGGraphBuilder:
         return None
 
     def _find_func_node_id(self, file_path: str, fn_name: str) -> str | None:
-        """Return the graph node ID for a function by file + name."""
-        for nid, data in self.graph.nodes(data=True):
+        """Return the graph node ID for a function by file + name.
+
+        BUG 50 (性能): 旧实现每次对**全图** ``self.graph.nodes(data=True)`` 扫描
+        ——大项目每个函数一次 O(全图)，总成本 O(函数数 × 图规模)：7 万文件级图
+        涨到 ~7M 节点、函数 ~150 万，≈ 10^12 次节点检查（解析源码并建图实测
+        小时级，cProfile 定位本函数 + 1750 万次 dict.get）。收窄到
+        ``_nodes_by_file`` 文件索引 O(本文件节点)，与三个边构建函数同源。
+        语义严格一致：``_nodes_by_file`` 与 ``graph.nodes`` 同为插入序，本文件
+        扫描的首个匹配 == 全图扫描的首个匹配（file_path 过滤下全图匹配只可能
+        落在本文件；索引缺失时 ``_file_node_ids`` 回退全图扫描仍按文件过滤）。
+        """
+        for nid in self._file_node_ids(file_path):
+            data = self.graph.nodes[nid]
             if (
                 data.get("node_type") == NODE_FUNCTION
-                and data.get("file_path") == file_path
                 and data.get("name") == fn_name
             ):
                 return nid
