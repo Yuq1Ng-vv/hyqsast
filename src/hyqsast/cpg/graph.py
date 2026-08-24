@@ -728,6 +728,25 @@ class CPGGraphBuilder:
         #
         # BUG 50 (性能): 外层参数 × 内层赋值两层全图扫描同为 O(G×G) 隐患，
         # 收窄到 ``_nodes_by_file`` 文件索引后 O(本文件参数 × 本文件赋值)。
+        #
+        # BUG 57 (性能): 后者仍是 O(P×N) 每文件二次方（P 参数 × N 文件节点，
+        # 上千参数文件单文件数十万次迭代）。单趟预建
+        # ``(enclosing_function, var_name) → 最小行赋值`` 索引，每参数 O(1) 查表。
+        # 语义严格一致：旧内层取「同 encl+var_name 的最小行、先到者」，预建索引
+        # 同规则（``line < cur[0]`` 严格小于，平局保留先到）。
+        best_by_key: dict[tuple[str, str], tuple[int, str]] = {}
+        for nid in self._file_node_ids(path):
+            adata = self.graph.nodes[nid]
+            if adata.get("node_type") != NODE_ASSIGNMENT:
+                continue
+            key = (adata.get("enclosing_function", ""), adata.get("var_name", ""))
+            loc = adata.get("location", "")
+            line = _parse_line(loc)
+            if line is None:
+                continue
+            cur = best_by_key.get(key)
+            if cur is None or line < cur[0]:
+                best_by_key[key] = (line, nid)
         for nid in self._file_node_ids(path):
             ndata = self.graph.nodes[nid]
             if ndata.get("node_type") != NODE_PARAMETER:
@@ -739,23 +758,9 @@ class CPGGraphBuilder:
             # Find the NODE_ASSIGNMENT that Phase 1.5 created for this
             # parameter (same var_name + enclosing_function + first line
             # of the function body, i.e. smallest line number match).
-            best_aid: str | None = None
-            best_line: int = 999999
-            for aid in self._file_node_ids(path):
-                adata = self.graph.nodes[aid]
-                if adata.get("node_type") != NODE_ASSIGNMENT:
-                    continue
-                if adata.get("var_name") != pname:
-                    continue
-                if adata.get("enclosing_function") != encl:
-                    continue
-                loc = adata.get("location", "")
-                line = _parse_line(loc)
-                if line is not None and line < best_line:
-                    best_line = line
-                    best_aid = aid
-            if best_aid is not None:
-                self.graph.add_edge(nid, best_aid, edge_type=EDGE_DATA_FLOW)
+            hit = best_by_key.get((encl, pname))
+            if hit is not None:
+                self.graph.add_edge(nid, hit[1], edge_type=EDGE_DATA_FLOW)
 
         # 4.6 — Build CFG for each function
         self._build_cfg(tree, fn_tree_nodes, provider, path)
@@ -1199,12 +1204,28 @@ class CPGGraphBuilder:
 
         cfg = _CFGBuilder(provider)
 
+        # BUG 58 (性能): 旧实现每函数调 ``_find_func_node_id`` 扫整文件节点 ——
+        # 单文件 O(F×N)（上千函数 × 上千节点 = 百万级迭代，大文件建图卡在这一
+        # 环，cProfile 实测 3300 函数文件里本函数占 6.2s）。预建「裸名 → 文件内
+        # 首个 NODE_FUNCTION」索引 O(N)，循环内 O(1) 查表。语义恒等：
+        # ``_find_func_node_id`` 正是「文件节点插入序首个 name 匹配」，
+        # ``first_by_name`` 同规则（首个见者入，与插入序一致）。重载方法共用
+        # 首个匹配节点 —— 与旧行为一致（``_resolve_bare_name`` 的 last-wins
+        # 是另一处独立歧义，不在本函数语义内）。
+        first_by_name: dict[str, str] = {}
+        for nid in self._file_node_ids(path):
+            data = self.graph.nodes[nid]
+            if data.get("node_type") == NODE_FUNCTION:
+                nm = data.get("name", "")
+                if nm and nm not in first_by_name:
+                    first_by_name[nm] = nid
+
         for fn_key, tree_node in fn_tree_nodes.items():
             # fn_key is "funcName$startLine" (BUG 30 overload fix) —
             # strip the line suffix to get the bare function name for
             # graph node lookup (NODE_FUNCTION stores bare names).
             fn_name = fn_key.rsplit("$", 1)[0]
-            fid = self._find_func_node_id(path, fn_name)
+            fid = first_by_name.get(fn_name)
             if fid is None:
                 continue
 
@@ -1281,27 +1302,6 @@ class CPGGraphBuilder:
             return func_nodes.get(key)
         return None
 
-    def _find_func_node_id(self, file_path: str, fn_name: str) -> str | None:
-        """Return the graph node ID for a function by file + name.
-
-        BUG 50 (性能): 旧实现每次对**全图** ``self.graph.nodes(data=True)`` 扫描
-        ——大项目每个函数一次 O(全图)，总成本 O(函数数 × 图规模)：7 万文件级图
-        涨到 ~7M 节点、函数 ~150 万，≈ 10^12 次节点检查（解析源码并建图实测
-        小时级，cProfile 定位本函数 + 1750 万次 dict.get）。收窄到
-        ``_nodes_by_file`` 文件索引 O(本文件节点)，与三个边构建函数同源。
-        语义严格一致：``_nodes_by_file`` 与 ``graph.nodes`` 同为插入序，本文件
-        扫描的首个匹配 == 全图扫描的首个匹配（file_path 过滤下全图匹配只可能
-        落在本文件；索引缺失时 ``_file_node_ids`` 回退全图扫描仍按文件过滤）。
-        """
-        for nid in self._file_node_ids(file_path):
-            data = self.graph.nodes[nid]
-            if (
-                data.get("node_type") == NODE_FUNCTION
-                and data.get("name") == fn_name
-            ):
-                return nid
-        return None
-
     # ── Graph properties ─────────────────────────────────────────────────
 
     def _add_rhs_to_lhs_edges(self, file_path: str) -> None:
@@ -1350,6 +1350,21 @@ class CPGGraphBuilder:
         # on the stored ``source``) — 否则行区间内的无关变量会被误桥接
         # （如多行语句共享行区间的变量，vampi 上曾因此 FP 暴涨）。source
         # 存的是完整 def_expression，缺失时退回行匹配保持召回。
+        #
+        # BUG 57 (性能): 旧循环每 var-ref 全量扫 spans —— O(V×A) 每文件二次方
+        # （上千赋值 + 上千 var-ref 时单文件数十万次迭代）。行索引化：单行 span
+        # 按行分组（绝大多数），跨行 span 进 ``multi``（BUG 48 少见）。var-ref
+        # 行 L 的候选 = ``by_line[L]`` ∪ {multi 中覆盖 L 者}，O(V + A + V×|multi|)。
+        # 边序恒等：候选按下标 idx 排序 == 旧实现「全量 spans 顺序过滤」的相对
+        # 顺序（idx 即 spans 原插入位）。
+        by_line: dict[int, list[tuple[int, int, str, str, int]]] = {}
+        multi: list[tuple[int, int, str, str, int]] = []
+        for _idx, (_start, _end, _aid, _avar) in enumerate(spans):
+            if _start == _end:
+                by_line.setdefault(_start, []).append((_start, _end, _aid, _avar, _idx))
+            else:
+                multi.append((_start, _end, _aid, _avar, _idx))
+
         for nid in self._file_node_ids(file_path):
             data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_VARIABLE_REF:
@@ -1359,9 +1374,17 @@ class CPGGraphBuilder:
                 continue
             loc = data.get("location", "")
             vline = int(loc.rsplit(":", 1)[-1]) if ":" in loc else 0
-            for start, end, aid, a_var in spans:
-                if vline < start or vline > end:
-                    continue
+            matched: list[tuple[int, int, str, str, int]] = []
+            cand = by_line.get(vline)
+            if cand:
+                matched.extend(cand)
+            if multi:
+                for s in multi:
+                    if s[0] <= vline <= s[1]:
+                        matched.append(s)
+            if len(matched) > 1:
+                matched.sort(key=lambda s: s[4])
+            for _start, _end, aid, a_var, _idx in matched:
                 if v_var == a_var:
                     continue
                 a_source = self.graph.nodes[aid].get("source", "") or ""
@@ -1400,6 +1423,16 @@ class CPGGraphBuilder:
         if not spans:
             return
 
+        # BUG 57 (性能): 与 _add_rhs_to_lhs_edges 同构的 O(V×C) 每文件二次方，
+        # 行索引化 + 按下标排序还原边序（见上）。multi 为跨行调用（BUG 46）。
+        by_line: dict[int, list[tuple[int, int, str, str, int]]] = {}
+        multi: list[tuple[int, int, str, str, int]] = []
+        for _idx, (_start, _end, _csid, _expr) in enumerate(spans):
+            if _start == _end:
+                by_line.setdefault(_start, []).append((_start, _end, _csid, _expr, _idx))
+            else:
+                multi.append((_start, _end, _csid, _expr, _idx))
+
         for nid in self._file_node_ids(file_path):
             data = self.graph.nodes[nid]
             if data.get("node_type") != NODE_VARIABLE_REF:
@@ -1409,9 +1442,17 @@ class CPGGraphBuilder:
                 continue
             loc = data.get("location", "")
             vline = int(loc.rsplit(":", 1)[-1]) if ":" in loc else 0
-            for start, end, csid, expr in spans:
-                if vline < start or vline > end:
-                    continue
+            matched: list[tuple[int, int, str, str, int]] = []
+            cand = by_line.get(vline)
+            if cand:
+                matched.extend(cand)
+            if multi:
+                for s in multi:
+                    if s[0] <= vline <= s[1]:
+                        matched.append(s)
+            if len(matched) > 1:
+                matched.sort(key=lambda s: s[4])
+            for _start, _end, csid, expr, _idx in matched:
                 if _word_in_text(vname, expr):
                     self.graph.add_edge(nid, csid, edge_type=EDGE_DATA_FLOW)
 

@@ -112,9 +112,14 @@ class DataFlowBuilder:
             else:
                 yield from traverser.traverse(root=body)
 
-        # Phase 1 — collect assignment targets within the function body
-        # _Assign: (var_name, def_node, def_source, def_line)
+        # Phase 1 + 2 merged (BUG 59): 旧实现两遍 body 子树遍历（先采赋值
+        # 再采使用），单趟预序即可同时完成。遍历节点集合、过滤谓词、输出排序
+        # 全部不变：assignments 仍按预序追加（Phase 1.5 紧随其后），var_uses
+        # 是查表（追加顺序无关，输出时按 def_location 排序、每处 use 单独
+        # sorted），故字节恒等。单文件两遍子树遍历 → 一遍，减半 def-use 的
+        # AST 行走成本（大文件上占建图可观份额）。
         assignments: list[_Assign] = []
+        var_uses: dict[str, list[str]] = {}
         for node in _body_nodes():
             if node.type in assign_types:
                 target = provider.extract_assignment_target(node)
@@ -127,6 +132,14 @@ class DataFlowBuilder:
                             line=node.start_point[0] + 1,
                         )
                     )
+            # Java 的 ``this`` 是独立节点类型（非 identifier）：``this.buf`` /
+            # ``this.method()`` 里的实例引用同样参与 def-use（漏报面 A 类
+            # 字段状态写读：``this.buf = t; sink(this.buf)``）。
+            if node.type in ("identifier", "this") and provider.is_variable_identifier(node):
+                var_name = _source(node)
+                if var_name not in var_uses:
+                    var_uses[var_name] = []
+                var_uses[var_name].append(_loc(node, file_path))
 
         # Phase 1.5 — collect parameter definitions (implicit assignments at
         # function entry).  This is critical for taint tracking: annotations
@@ -149,22 +162,6 @@ class DataFlowBuilder:
                         line=func_def_line,
                     )
                 )
-
-        # Phase 2 — single pass: collect all variable uses, then associate with defs
-        # Build a map from var_name → list of use locations in one tree traversal
-        var_uses: dict[str, list[str]] = {}
-        for node in _body_nodes():
-            # Java 的 ``this`` 是独立节点类型（非 identifier）：``this.buf`` /
-            # ``this.method()`` 里的实例引用同样参与 def-use（漏报面 A 类
-            # 字段状态写读：``this.buf = t; sink(this.buf)``）。
-            if node.type not in ("identifier", "this"):
-                continue
-            if not provider.is_variable_identifier(node):
-                continue
-            var_name = _source(node)
-            if var_name not in var_uses:
-                var_uses[var_name] = []
-            var_uses[var_name].append(_loc(node, file_path))
 
         # Associate each assignment with its uses (skip the definition site itself)
         results: list[DefUsePair] = []

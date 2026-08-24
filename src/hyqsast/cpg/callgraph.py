@@ -206,35 +206,44 @@ class SingleFileCallGraph:
         func_def_types = provider.func_def_types
         call_type = provider.call_node_type
 
-        # Phase 1 — collect all function definition names
-        # BUG 9: Also generate qualified names (ClassName.methodName)
-        # for Java methods to avoid collisions from overloaded methods.
-        for func_node in traverser.traverse(func_def_types):
-            name = provider.extract_function_name(func_node)
-            if name:
-                self._function_names.add(name)
-                qualified = self._make_qualified_name(func_node, name, language)
-                if qualified and qualified != name:
-                    self._qualified_function_names.add(qualified)
+        # Phase 1 + 2 merged (BUG 59): 旧实现两遍整树遍历（先采函数名再采调用）。
+        # 单趟预序同时收集两者 —— 过滤谓词只执行一次、C 级 cursor 行走一遍。
+        # 调用解析推迟到收集完成后：此时 ``_function_names`` / ``_qualified_function_names``
+        # 已完整，前向调用（Java 惯用的后声明方法）解析结果与两遍版逐字节一致；
+        # 调用收集仍按预序，``_edges`` 追加顺序不变。
+        calls_found: list[tuple[object, str, str, bool, str, str, int, int]] = []
+        for node in traverser.traverse():
+            if node.type in func_def_types:
+                # BUG 9: Also generate qualified names (ClassName.methodName)
+                # for Java methods to avoid collisions from overloaded methods.
+                name = provider.extract_function_name(node)
+                if name:
+                    self._function_names.add(name)
+                    qualified = self._make_qualified_name(node, name, language)
+                    if qualified and qualified != name:
+                        self._qualified_function_names.add(qualified)
+            elif node.type in call_type:
+                callee_info = provider.extract_callee_info(node)
+                if callee_info is None:
+                    continue
+                bare_name, full_expr, is_method = callee_info
+                # BUG 54: 提取方法调用的对象前缀（svmod），供跨文件解析用
+                receiver = provider.extract_receiver(node)
+                caller = self._find_enclosing_func(node, provider)
+                if caller is None:
+                    continue
+                call_line = node.start_point[0] + 1
+                # BUG 46: 多行调用（实参换行）时 call_node.end_point 覆盖完整
+                # 调用区间，供 var_ref→call_site 桥接按行区间匹配。
+                call_end_line = node.end_point[0] + 1
+                calls_found.append(
+                    (node, bare_name, full_expr, is_method, receiver, caller,
+                     call_line, call_end_line)
+                )
 
-        # Phase 2 — walk every call node and attribute to enclosing function
-        for call_node in traverser.traverse(call_type):
-            callee_info = provider.extract_callee_info(call_node)
-            if callee_info is None:
-                continue
-
-            bare_name, full_expr, is_method = callee_info
-            # BUG 54: 提取方法调用的对象前缀（svmod），供跨文件解析用
-            receiver = provider.extract_receiver(call_node)
-
-            caller = self._find_enclosing_func(call_node, provider)
-            if caller is None:
-                continue
-
-            call_line = call_node.start_point[0] + 1
-            # BUG 46: 多行调用（实参换行）时 call_node.end_point 覆盖完整调用
-            # 区间，供 var_ref→call_site 桥接按行区间匹配（否则实参断链）。
-            call_end_line = call_node.end_point[0] + 1
+        # Phase 2b — 解析每个调用的 callee（此时函数名集合已完整）。
+        for (_node, bare_name, full_expr, is_method, receiver, caller,
+             call_line, call_end_line) in calls_found:
             # BUG 9: Resolve callee using qualified names for method calls
             resolved_callee = bare_name
             is_resolved = bare_name in self._function_names
