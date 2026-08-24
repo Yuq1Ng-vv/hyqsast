@@ -90,6 +90,27 @@ python -m hyqsast D:\project --language java -o report.json
   需把联网机上的 `benchmarks/owasp-benchmark/`（约 240MB）一起拷过去，或
   `export OWASP_BENCH_DIR=已拷位置`。
 
+## MCP 接入（LLM 调用 HyqSast）
+
+个人用仍走上面的 CLI；要让 **LLM 通过 MCP 调用**，另有一层薄封装（纯静态、
+零内部 LLM 决策，工具只负责「扫描 → 返回 6 份 JSON 的落盘路径 + 结构」，
+重数据落盘供下游聚合 MCP 直接读文件）。设计详见 `docs/MCP接入设计.md`。
+
+```bash
+# 装 mcp 依赖（optional extra，需联网一次；核心分析依赖不受影响）
+uv sync --extra mcp
+
+# 启动 MCP server（默认 stdio，不开端口），或在 Claude Code 里注册：
+claude mcp add hyqsast -- uv run python scripts/hyqsast_mcp.py
+```
+
+工具：`discover(directory)` 探测语言/框架候选；`scan(directory, language?,
+framework?, max_findings_per_category?, enable_container_bridge?,
+enable_state_bridge?, rules_paths?, output_dir?)` 扫描并返回
+`{ok, language, framework, summary, artifacts:[{name, path, structure}...]}`。
+注意：MCP server 依赖 `mcp` SDK，**不进离线 vendor/**，离线机上跑 MCP 需要
+联网装过一次的环境。
+
 ## 自定义规则库
 
 规则库在 `src/hyqsast/cpg/taint_rules.yaml`。可以不改这个大文件，用**额外规则

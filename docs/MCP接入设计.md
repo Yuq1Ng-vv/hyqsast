@@ -66,12 +66,13 @@ pyproject.toml         # [project.optional-dependencies] mcp = ["mcp>=1.x"]
 | `language` | string | | 枚举 `java`/`python`/`javascript`；缺省自动探测 |
 | `framework` | string | | 框架提取器名（`spring`/`flask`/`express`...）；缺省按语言默认 |
 | `max_findings_per_category` | integer | | 每类别最多 finding 数，默认 50 |
-| `mode` | string | | 枚举 `full`(默认)/`per_file`；自包含用例集（如单测、benchmark 用例）用 `per_file`，省内存 |
 | `enable_container_bridge` | boolean | | 容器/Builder 状态桥接，默认 false（开则提高召回、略增误报） |
 | `enable_state_bridge` | boolean | | 跨函数状态桥接，默认 false |
 | `rules_paths` | string[] | | 额外规则文件或目录（在内置 `taint_rules.yaml` 上追加去重合并） |
 | `output_dir` | string | | 报告落盘目录；缺省 `<directory>/.hyqsast-report/` |
-| `include_findings` | boolean | | 是否把 finding 列表放回结果，默认 true；大项目可 false 只回 summary+路径 |
+
+> v1 无 `mode`（`per_file` 分块扫描）与 `include_findings`——结果本就只回
+> 路径+结构，`mode=per_file` 留到 v2 需要时再加。
 
 **outputs**（成功）：
 
@@ -169,12 +170,15 @@ claude mcp add hyqsast -- python3 scripts/hyqsast_mcp.py
 }
 ```
 
-## 7. 遗留决策（待定）
+## 7. 决策记录（v1 已定，v2 待定）
 
-1. **同步还是带 job**：草案默认同步（A 方案，简单）。但大项目单次扫描可能数
-   分钟到数小时，客户端等不起。备选：`scan` 支持 `async: true` 立刻返回
-   `job_id`，另加 `scan_status(job_id)` / `scan_result(job_id)` 两个工具轮询。
-   倾向：先做同步 + `per_file` 逃生舱，等真有需求再上 job。
-2. **resources vs 只给路径**：Claude Code 里 LLM 能直接读文件，给 `artifacts`
-   路径就够了；resource 是为不能读文件的客户端准备的。先做路径，resource 后补。
-3. **`discover` 是否做成独立工具**：能省 LLM 一次错误重试，成本低，倾向做。
+1. **同步 vs 带 job**：v1 定案为**同步**。大项目超时由错误契约（`scan_timeout`
+   思路）+ `per_file` 逃生舱兜底；`async: true → job_id + scan_status/scan_result`
+   等真有"等不起"的需求再上。
+2. **resources vs 只给路径**：定案**只给路径**。下游聚合 MCP 直接按 `path` 读
+   文件、按 `structure` 解析，resource 懒加载没有意义。
+3. **`discover`**：已实现为独立工具（v1）。
+4. **MCP 离线约束（v1 明确）**：核心 CLI 完全离线（vendor/ 六依赖）；但 MCP
+   server 依赖 `mcp` SDK（含 pydantic/starlette 等重依赖），**需联网装一次**
+   `uv sync --extra mcp`，vendor/ 不打包它。`scripts/hyqsast_mcp.py` 启动器只
+   保证在有 mcp 的 python 环境里能跑。

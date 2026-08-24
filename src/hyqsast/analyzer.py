@@ -53,6 +53,12 @@ _LANGUAGE_FRAMEWORKS: dict[str, list[str]] = {
     "java": ["spring"],
 }
 
+
+def default_frameworks_for(language: str) -> list[str]:
+    """返回某语言默认尝试的框架提取器候选（供 discover / MCP 层使用）。"""
+    return list(_LANGUAGE_FRAMEWORKS.get(language, []))
+
+
 # 单次扫描每个漏洞类别最多产出的 finding 数（防止大型项目输出爆炸）
 _DEFAULT_MAX_FINDINGS_PER_CATEGORY = 50
 

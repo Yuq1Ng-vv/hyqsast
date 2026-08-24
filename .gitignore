@@ -13,6 +13,9 @@ dist/
 # 生成的扫描报告
 report.json
 
+# MCP scan 默认落盘目录（<directory>/.hyqsast-report/）
+.hyqsast-report/
+
 # 本地机器相关的 Claude Code 权限配置（不入库）
 .claude/settings.local.json
 

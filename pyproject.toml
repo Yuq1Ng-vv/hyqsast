@@ -27,12 +27,18 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.14",
 ]
+# MCP 接入（LLM 调用 HyqSast 的可选入口，见 docs/MCP接入设计.md）。
+# 独立 optional extra：核心确定性分析依赖零新增，离线 vendor/ 也不包含它。
+# 用 FastMCP 声明式 API；mcp 2.x 移除了 FastMCP，故锁 <2.0
+mcp = [
+    "mcp>=1.0,<2.0",
+]
 
 [project.scripts]
 hyqsast = "hyqsast.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hyqsast"]
+packages = ["src/hyqsast", "src/hyqsast_mcp"]
 
 [tool.ruff]
 target-version = "py312"
