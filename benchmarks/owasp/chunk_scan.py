@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,18 @@ def _vm_rss() -> str:
     return "?"
 
 
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """在扫描盒目录里放源码文件：优先 symlink（Linux 快、省空间）。
+
+    Windows 上创建符号链接需要管理员/开发者模式（否则 ``os.symlink`` 抛
+    WinError 1314「客户端没有所需的特权」），无权限时退化为复制文件——
+    扫描只读文件内容，结果逐字节一致。"""
+    try:
+        dst.symlink_to(src)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
 def scan_chunks(
     files: list[Path],
     out_dir: Path,
@@ -65,6 +78,9 @@ def scan_chunks(
 
     hyqsast_bin = Path(sys.executable).parent / "hyqsast"
     if not hyqsast_bin.exists():
+        # Windows 下 uv 装的 console script 是 hyqsast.exe
+        hyqsast_bin = Path(sys.executable).parent / "hyqsast.exe"
+    if not Path(hyqsast_bin).exists():
         hyqsast_bin = "hyqsast"
 
     for i in range(0, len(files), size):
@@ -74,7 +90,7 @@ def scan_chunks(
         for f in chunk:
             link = part_dir / f.name
             if not link.exists():
-                os.symlink(f, link)
+                _link_or_copy(f, link)
         report = parts_dir / f"report_chunk_{i // size:03d}.json"
         reports.append(report)
         if report.exists():
@@ -163,7 +179,7 @@ def scan_per_file(
         box.mkdir(exist_ok=True)
         link = box / f.name
         if not link.exists():
-            link.symlink_to(f)
+            _link_or_copy(f, link)
         try:
             r = scan(
                 box,
