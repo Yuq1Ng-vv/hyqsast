@@ -28,3 +28,6 @@ benchmarks/owasp-benchmark/
 # 性能探针生成产物（可经 perf_gen_probes.py 重新生成）
 perf_probes/
 repro_py_fp/
+
+# 离线依赖打包产物（scripts/build_vendor.py 生成，平台相关，不入库）
+vendor/

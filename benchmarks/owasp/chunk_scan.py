@@ -121,12 +121,13 @@ def scan_chunks(
     size = max(1, (len(files) + n_chunks - 1) // n_chunks)
     reports: list[Path] = []
 
-    hyqsast_bin = Path(sys.executable).parent / "hyqsast"
-    if not hyqsast_bin.exists():
+    # 优先用相邻的 console script；都没有则退化为 python -m hyqsast
+    # （离线机器无 venv，配合 vendor/ + PYTHONPATH 也能跑 chunk 模式）。
+    exe = Path(sys.executable).parent / "hyqsast"
+    if not exe.exists():
         # Windows 下 uv 装的 console script 是 hyqsast.exe
-        hyqsast_bin = Path(sys.executable).parent / "hyqsast.exe"
-    if not Path(hyqsast_bin).exists():
-        hyqsast_bin = "hyqsast"
+        exe = Path(sys.executable).parent / "hyqsast.exe"
+    base_cmd = [str(exe)] if exe.exists() else [sys.executable, "-m", "hyqsast"]
 
     for i in range(0, len(files), size):
         chunk = files[i : i + size]
@@ -142,7 +143,7 @@ def scan_chunks(
             print(f"  [chunk {i // size:03d}] {len(chunk)} 文件 -> {report.name}（已存在，跳过）")
             continue
         cmd = [
-            str(hyqsast_bin),
+            *base_cmd,
             str(part_dir),
             "--language",
             "java",

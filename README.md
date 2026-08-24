@@ -46,6 +46,43 @@ uv run hyqsast /path/to/java/project --language java -o report.json
 # 与 report.elements.json（污点元素清单）；加 --no-canonical / --no-elements 可分别关掉
 ```
 
+## 离线执行（断网 / 无 uv venv）
+
+整个工具（不只 benchmark）都支持在**离线机器**上运行：依赖打包进仓库内
+`vendor/`（gitignored，不随 git 走），目标机只要系统有 **python 3.12**，无需
+uv / pip / 网络。
+
+```bash
+# ① 在联网机上构建 vendor/（一次；linux/win/mac 三平台，--all = 全构建）
+uv run python scripts/build_vendor.py --all        # 任意平台都能交叉构建其它平台
+
+# ② 把整个仓库（含 vendor/ 目录）拷到离线机，然后：
+python3 scripts/hyqsast.py /path/to/project --language java -o report.json
+#     ^ 等价于 uv run hyqsast ...，启动器按当前平台自动挂 vendor/ 依赖 + src/
+
+# 不想用启动器，或要跑 scripts/ 下其它脚本（如 OWASP 分块扫描）时手动挂 PYTHONPATH：
+export PYTHONPATH=$PWD/vendor/common:$PWD/vendor/linux-x86_64:$PWD/src   # 路径分隔符 Linux 是 :
+python3 -m hyqsast /path/to/project --language java -o report.json
+python3 benchmarks/owasp/chunk_scan.py --per-file ...                    # OWASP 基准也能离线跑
+```
+
+**Windows（PowerShell）**：vendor 用 `build_vendor.py --platform win` 构建（本机
+直接跑，或任一联网机交叉构建）；命令分隔符换成 `;`，目录换 `win-amd64`：
+
+```powershell
+python scripts\hyqsast.py D:\project --language java -o report.json     # 启动器自动识别
+$env:PYTHONPATH = "$PWD\vendor\common;$PWD\vendor\win-amd64;$PWD\src"   # 手动挂
+python -m hyqsast D:\project --language java -o report.json
+```
+
+注意：
+- vendor 是给**特定 python 小版本**构建的（tree-sitter 核心是 cp312 专用 `.so`/
+  `.pyd`），离线机 python 小版本须与构建时一致（默认 3.12；目标机是 3.13 就用
+  `build_vendor.py --python-version 3.13` 重新构建）。
+- OWASP Benchmark 源码是另一个网络依赖：离线机上基准的自动 clone 也会失败，
+  需把联网机上的 `benchmarks/owasp-benchmark/`（约 240MB）一起拷过去，或
+  `export OWASP_BENCH_DIR=已拷位置`。
+
 ## 自定义规则库
 
 规则库在 `src/hyqsast/cpg/taint_rules.yaml`。可以不改这个大文件，用**额外规则

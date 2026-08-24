@@ -36,6 +36,8 @@ uv run ruff format .
 
 依赖仅 6 个轻量包：`tree-sitter`、`tree-sitter-python/java/javascript`、`networkx`、`pyyaml`。**不要**引入 LLM / langgraph / 报告栈等重依赖。
 
+**离线/跨平台执行（断网机器上跑整个工具）**：依赖打包进 `vendor/`（gitignored，`scripts/build_vendor.py` 构建，支持 linux/win/mac 交叉构建），离线机只要系统 python 3.12：`python3 scripts/hyqsast.py <项目> --language java`（启动器自动挂 PYTHONPATH）。详见 README「离线执行」节。改动 offline 相关代码时保持 `python -m hyqsast` + PYTHONPATH 可跑、不依赖 venv。
+
 ## 架构与数据流
 
 入口 `src/hyqsast/api.py` 的 `scan()` → `Analyzer.run()` 编排四步：
