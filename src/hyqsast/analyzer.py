@@ -162,18 +162,21 @@ class Analyzer:
         prog.stage("关联接口")
         self._link_findings(findings, endpoints)
 
-        prog.begin("汇总", total=4)
+        # 汇总四个子阶段，慢的按工作单元粒度 set_total+step（与建图一致）：
+        # 规范版报告/污点元素清单都是长循环，零 step 会卡在上一子阶段的 % 且
+        # ETA 因无速度样本显示 -:--:--。盲区清单、汇总计数各单步。
+        prog.begin("汇总")
         prog.stage("盲区清单")
         blind_spots = self._build_blind_spots(endpoints) if self.include_blind_spots else []
+        prog.set_total(1)
         prog.step(1)
         prog.stage("规范版报告")
-        canonical = self._build_canonical_findings(findings)
-        prog.step(1)
+        canonical = self._build_canonical_findings(findings, progress=prog)
         prog.stage("污点元素清单")
-        taint_elements = self._collect_taint_elements(findings)
-        prog.step(1)
+        taint_elements = self._collect_taint_elements(findings, progress=prog)
         prog.stage("汇总计数")
         summary = self._summarize(endpoints, findings, blind_spots)
+        prog.set_total(1)
         prog.step(1)
         prog.end()
 
@@ -683,23 +686,38 @@ class Analyzer:
             params=list(ep.params),
         )
 
-    def _build_canonical_findings(self, findings: list[Finding]) -> list[CanonicalFinding]:
+    def _build_canonical_findings(
+        self, findings: list[Finding], progress: object | None = None
+    ) -> list[CanonicalFinding]:
         """构建规范版报告：sink 函数完整源码 + 函数级真实调用链 + 接口信息。
 
         与正常报告一一对应，但更面向人工复核：调用链折叠成函数级
         ``x -> y -> z -> sink``，sink 函数整段贴出并标出 sink 行。
+
+        ``progress``（可选）：按 finding 逐条 set_total+step。每个 finding 要
+        遍历全图找 sink 函数（``_sink_function_block``）+ 渲染调用链 + 读源码
+        —— finding 数大时是慢循环，零 step 会让「规范版报告」子阶段卡在 25%
+        且 ETA 无速度样本（-:--:--）。
         """
-        return [
-            CanonicalFinding(
-                id=f.id,
-                vuln_type=f.vuln_type,
-                vuln_name=(f"{vuln_display_name(f.vuln_type)} @ {f.sink.file_path}:{f.sink.line}"),
-                endpoint=self._render_endpoint(f.endpoint),
-                sink_function=self._sink_function_block(f),
-                call_chain=self._render_chain(f),
+        if progress is not None:
+            progress.set_total(len(findings) or 1)
+        out: list[CanonicalFinding] = []
+        for f in findings:
+            out.append(
+                CanonicalFinding(
+                    id=f.id,
+                    vuln_type=f.vuln_type,
+                    vuln_name=(
+                        f"{vuln_display_name(f.vuln_type)} @ {f.sink.file_path}:{f.sink.line}"
+                    ),
+                    endpoint=self._render_endpoint(f.endpoint),
+                    sink_function=self._sink_function_block(f),
+                    call_chain=self._render_chain(f),
+                )
             )
-            for f in findings
-        ]
+            if progress is not None:
+                progress.step(1)
+        return out
 
     @staticmethod
     def _render_endpoint(m: EndpointMatch) -> str:
@@ -875,17 +893,35 @@ class Analyzer:
 
     # ── 污点元素清单（漏报排查） ────────────────────────────────────────
 
-    def _collect_taint_elements(self, findings: list[Finding]) -> list[TaintElement]:
+    def _collect_taint_elements(
+        self, findings: list[Finding], progress: object | None = None
+    ) -> list[TaintElement]:
         """枚举规则引擎在整张图上识别到的 source / sink 点。
 
         与 finding 正交：每个被打上 ``taint_source`` / ``taint_sink`` 标签的
         节点都记一条（多类别节点逐类别展开），并用 ``covered`` 标注该位置
         是否出现在某条已产出 finding 的 source/sink 里 —— 排查漏报时
         「有 sink 规则、却没接住任何 finding」的裸 sink 一眼可见。
+
+        ``progress``（可选）：按「有标签节点」粒度 set_total+step（有标签节点
+        才是本循环的实际工作量，无标签节点秒过）。大图全量节点是慢循环，零
+        step 会让「污点元素清单」子阶段同样卡死在本阶段 % 上。
         """
         rules = self.taint_loader.rules_for(self.language)
         src_covered = {(f.source.file_path, f.source.line) for f in findings}
         sink_covered = {(f.sink.file_path, f.sink.line) for f in findings}
+
+        if progress is not None:
+            # 预扫一遍数有标签节点数作 total，避免循环内 continue 跳过导致
+            # total 与实际 step 数不符、子阶段条爬不到 100%。
+            n_labeled = sum(
+                1
+                for _n, d in self.graph_builder.graph.nodes(data=True)
+                if d.get("file_path")
+                and d.get("line")
+                and (d.get("taint_source") or d.get("taint_sink"))
+            )
+            progress.set_total(n_labeled or 1)
 
         elements: list[TaintElement] = []
         for _nid, data in self.graph_builder.graph.nodes(data=True):
@@ -921,6 +957,8 @@ class Analyzer:
                         covered=covered,
                     )
                 )
+            if progress is not None:
+                progress.step(1)
         elements.sort(key=lambda e: (e.kind, e.category, e.file_path, e.line))
         return elements
 

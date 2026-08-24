@@ -9,9 +9,10 @@ Analyzer / CPGGraphBuilder 只在阶段边界与长循环里调用 :class:`Progr
   progress 参数（默认 no-op，零输出）。
 - 离线 vendor 环境没有 rich 时自动走纯文本兜底，离线执行不受影响。
 
-总体条按**时间权重**爬（``_PHASE_WEIGHTS``），ETA 从同一比例线性外推：
-``已用 × (1 - 比例) / 比例``。阶段权重是静态启发式（建图/污点传播最重），
-不是实测校准——提前说明，避免用户把 ETA 当精确值。
+总体条按**时间权重**爬（``_PHASE_WEIGHTS`` 作先验），ETA 从同一完成度外推：
+``已用 × (1 - 比例) / 比例``。权重会随实测自适应：阶段超时→实际占比上浮
+（吃剩余阶段权重）、先验按当前子阶段实测速率上修——所以 ETA 收敛到真实量级，
+而不是建图 55% 权重被一个子阶段吃满后永远线性上涨。先验只是起点，不是精确值。
 """
 
 from __future__ import annotations
@@ -150,6 +151,16 @@ class _RichProgress(Progress):
         self._phase_id = self._bar.add_task("", total=None)
         self._eta_col.overall_id = self._overall_id
         self._t0 = 0.0
+        # ── 自适应总体完成度状态（见 _overall_completed）─────────────────
+        # 先验权重模型把建图 55% 吃满后，慢子阶段期间 c 不动 → ETA 线性涨。
+        # 改为：阶段超时→实际占比上浮（吃剩余权重）→ c 跟着实际用时走，
+        # ETA 收敛而不是永远增长。
+        self._prior_total = 3600.0  # 名义总时长（秒），仅初始化每个阶段的先验
+        self._phase_t0 = 0.0        # 当前阶段 begin 时刻（monotonic）
+        self._phase_prior = 1.0     # 当前阶段预估总时长（秒）
+        self._cur_w_eff = 0.0       # 当前阶段实际权重（超时上浮）
+        self._weight_done = 0.0     # 已完成阶段的实际权重累计（fold 折入）
+        self._phase_has_substages = False  # 本阶段是否调过 set_total（子阶段模式）
         self._phases: list[str] = []
         self._cur = -1
         self._phase_done = 0
@@ -171,11 +182,19 @@ class _RichProgress(Progress):
     def begin(self, phase: str, total: int | None = None) -> None:
         if phase not in self._phases:
             self._phases.append(phase)
+        # 上一阶段完成：把它的实际权重（含超时上浮）折进已完成权重，阶段切换
+        # 时总条不往回缩（超时阶段占的实际比重在切换后必须保留）。
+        if self._cur >= 0:
+            self._weight_done += self._cur_w_eff
         self._cur = self._phases.index(phase)
         self._phase_done = 0
         self._phase_total = total
+        self._phase_has_substages = False
         self._stage_chain = []
         self._stage_current = None
+        self._phase_t0 = time.monotonic()
+        self._cur_w_eff = _PHASE_WEIGHTS.get(phase, 1.0)
+        self._phase_prior = max(1.0, self._cur_w_eff / 100.0 * self._prior_total)
         self._bar.update(
             self._overall_id,
             completed=self._overall_completed(),
@@ -192,6 +211,7 @@ class _RichProgress(Progress):
 
     def set_total(self, n: int) -> None:
         self._phase_total = n
+        self._phase_has_substages = True  # 子阶段模式：task.elapsed 随 reset 归零
         # reset（而非 update）：同一阶段内跨子阶段切换（索引→连边各有 total）
         # 时 completed 必须清零重爬——否则上一子阶段爬满 100% 后下一子阶段仍
         # 显示 100%（视觉假象）。reset 同时清空 speed 样本 → 子阶段 ETA 新鲜。
@@ -200,6 +220,19 @@ class _RichProgress(Progress):
     def step(self, n: int = 1) -> None:
         self._phase_done += n
         self._bar.advance(self._phase_id, n)
+        # 自适应先验：用当前子阶段实测速率推阶段全长——阶段若实际比先验慢，
+        # 先验上修 → 总体 ETA 的冻结值跟着涨，不会一直停在乐观值。set_total
+        # 会 reset rich 任务（start_time 归零），所以 task.elapsed 在子阶段
+        # 模式下就是当前子阶段已用时间。frac 太小时跳过，避免子阶段起步瞬间
+        # 的微小进度把先验撑爆。
+        task = self._bar.tasks[self._phase_id]
+        if task.total and task.completed > 0 and task.elapsed > 0:
+            frac = task.completed / task.total
+            if frac > 0.02:
+                projected = task.elapsed / frac
+                mult = 2.0 if self._phase_has_substages else 1.0
+                cap = self._cur_w_eff / 100.0 * self._prior_total * 6.0
+                self._phase_prior = max(self._phase_prior, min(projected * mult, cap))
         self._bar.update(self._overall_id, completed=self._overall_completed())
 
     def end(self) -> None:
@@ -242,21 +275,40 @@ class _RichProgress(Progress):
         return "[bold cyan]总体[/bold cyan]  " + "  ".join(parts)
 
     def _overall_completed(self) -> float:
-        """按时间权重折算的总体完成度（0~100）。每步重算，供 ETA 外推。"""
+        """自适应总体完成度（0~100）。每步重算，供 ETA 外推。
+
+        旧模型 c = (已完成权重 + 当前权重 × 子阶段完成度)/100：建图第一个子
+        阶段（索引文件）total 与后续子阶段相同，一步就爬到 55% → 慢子阶段期间
+        c 平台化 → ETA = 已用×45/55 线性上涨，永远不收敛（用户实测「总体一直
+        55% + 总时间一直在增」）。
+
+        新模型让权重跟着**实际用时**走：
+        - 阶段未超时：c 按 elapsed/先验 平滑爬（c ∝ 时间 → ETA 稳定不线性涨）；
+        - 阶段超时：当前阶段实际权重上浮（吃剩余阶段权重），分母同步放大
+          （total_w = 已完成实际权重 + 当前实际权重 + 剩余先验权重），c 不
+          提前封顶、ETA 不塌成 0，收敛到真实量级。
+        """
         if not self._phases or self._cur < 0:
             return 0.0
         cur = self._phases[self._cur]
-        base = sum(_PHASE_WEIGHTS.get(p, 1.0) for p in self._phases[: self._cur])
         w = _PHASE_WEIGHTS.get(cur, 1.0)
-        total = sum(_PHASE_WEIGHTS.get(p, 1.0) for p in self._phases)
-        if total <= 0:
-            return 0.0
-        frac = 1.0
-        if self._phase_total:
-            frac = min(self._phase_done / self._phase_total, 1.0)
+        elapsed = time.monotonic() - self._phase_t0
+        if elapsed <= 0:
+            frac, self._cur_w_eff = 0.0, w
+        elif elapsed <= self._phase_prior:
+            frac, self._cur_w_eff = elapsed / self._phase_prior, w
         else:
-            frac = 0.0  # 不定长阶段（兜底）：保持不动，end() 再拉满
-        return (base + w * frac) * 100.0 / total
+            # 阶段超时：实际占比按超时比例上浮；分母同步放大，c 不提前封顶
+            self._cur_w_eff = w * elapsed / self._phase_prior
+            frac = 1.0
+        # 剩余阶段按先验权重预留给未来（分母随当前阶段超时一起放大）
+        remaining = sum(
+            _PHASE_WEIGHTS.get(p, 1.0) for p in self._phases[self._cur + 1 :]
+        )
+        total_w = self._weight_done + self._cur_w_eff + remaining
+        if total_w <= 0:
+            return 0.0
+        return (self._weight_done + self._cur_w_eff * frac) * 100.0 / total_w
 
     def _overall_eta(self) -> str | None:
         """总体 ETA：``已用 × (1 - 完成度) / 完成度`` 线性外推。

@@ -226,7 +226,19 @@ class CallGraphBuilder:
             imported_names[fp] = {n for imp in imps for n in imp.names}
 
         if progress is not None:
-            progress.set_total(len(self._graphs))
+            # 工作单元 = 文件数 + 未解析调用数 + 本地遮蔽补发调用数。
+            # 按调用粒度 step（而非每文件一步）：真实项目里单个文件几十个跨
+            # 文件调用 × 上千同名定义文件时，解析要跑很久——每文件一步会让
+            # 进度条卡在 0% 看着像冻住（「卡在跨文件调用边」）。按调用推进，
+            # 病态文件里条也持续走、ETA 反映真实速率。
+            total_units = len(self._graphs)
+            for fp, cg in self._graphs.items():
+                total_units += len(cg.unresolved)
+                imp = imported_names.get(fp, set())
+                total_units += sum(
+                    1 for e in cg.edges if e.is_resolved and e.callee in imp
+                )
+            progress.set_total(total_units)
         for file_path, cg in self._graphs.items():
             imports_for_file = self._imports.get(file_path, [])
             imported_modules = {imp.module for imp in imports_for_file}
@@ -292,6 +304,8 @@ class CallGraphBuilder:
                     uc.full_expression,
                     uc.is_method_call,
                 )
+                if progress is not None:
+                    progress.step(1)
 
             # 2) 本地遮蔽调用（本地已解析、但 callee 名被 import）→ 补发跨文件边。
             #    图建阶段：同一 call_site 节点（file,line,caller,callee 同键）会被
@@ -311,8 +325,8 @@ class CallGraphBuilder:
                     e.full_expression,
                     e.is_method_call,
                 )
-            if progress is not None:
-                progress.step(1)
+                if progress is not None:
+                    progress.step(1)
 
         return cross_edges
 
