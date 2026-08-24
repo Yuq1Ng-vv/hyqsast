@@ -24,11 +24,56 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _default_bench_dir() -> Path:
+    """基准目录解析：仓库内相对路径优先（clone 仓库即自包含，自动 clone 也放这里）。
+
+    候选顺序：仓库内 ``benchmarks/owasp-benchmark/``（gitignore 不入库）→
+    旧默认 ``/root/benchmarks/owasp-benchmark``（本机已有，免重新 clone）→
+    ``~/owasp-benchmark``。都没有则返回仓库内路径，等 ``_ensure_benchmark`` 克隆。
+    """
+    candidates = [
+        REPO_ROOT / "benchmarks/owasp-benchmark",
+        Path("/root/benchmarks/owasp-benchmark"),
+        Path.home() / "owasp-benchmark",
+    ]
+    for c in candidates:
+        if (c / "expectedresults-1.2.csv").exists():
+            return c
+    return candidates[0]
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BENCH_DIR = Path(os.environ.get("OWASP_BENCH_DIR", "/root/benchmarks/owasp-benchmark"))
+_env_bench = os.environ.get("OWASP_BENCH_DIR")
+BENCH_DIR = Path(_env_bench) if _env_bench else _default_bench_dir()
 TESTCODE = BENCH_DIR / "src/main/java/org/owasp/benchmark/testcode"
 EXPECTED = BENCH_DIR / "expectedresults-1.2.csv"
 RESULTS = REPO_ROOT / "benchmarks/owasp/results"
+
+
+def _ensure_benchmark(ap: argparse.ArgumentParser, auto_clone: bool) -> None:
+    """OWASP Benchmark 缺失时自动 clone（--depth 1，仓库内相对路径）。
+
+    全量仓库 240MB，但 hyqsast 只用 testcode 17MB + expectedresults 96KB，
+    不入我们的 git（第三方基准，且每台机器 clone 一次即可）。"""
+    if TESTCODE.exists() and EXPECTED.exists():
+        return
+    if not auto_clone:
+        ap.error(
+            f"找不到 OWASP Benchmark（{BENCH_DIR}）：先 export OWASP_BENCH_DIR 指向"
+            f"已 clone 的仓库，或去掉 --no-auto-clone 让工具自动 clone"
+        )
+    print(
+        f"[chunk_scan] OWASP Benchmark 缺失，自动 git clone --depth 1 到 {BENCH_DIR}"
+        "（~240MB，仅首次需要网络）..."
+    )
+    subprocess.run(
+        ["git", "clone", "--depth", "1",
+         "https://github.com/OWASP-Benchmark/BenchmarkJava.git", str(BENCH_DIR)],
+        check=True,
+    )
+    if not EXPECTED.exists():
+        ap.error(f"clone 后仍找不到 expectedresults：{EXPECTED}")
 
 
 def _collect_files() -> list[Path]:
@@ -257,6 +302,11 @@ def main() -> None:
         action="store_true",
         help="透传给 hyqsast：开跨函数状态桥接（OWASP 桥接开/关对比用）",
     )
+    ap.add_argument(
+        "--no-auto-clone",
+        action="store_true",
+        help="OWASP Benchmark 缺失时不自动 clone，直接报错",
+    )
     args = ap.parse_args()
 
     out_dir = RESULTS / args.label
@@ -274,10 +324,7 @@ def main() -> None:
         merge(reports, out_val)
         return
 
-    if not TESTCODE.exists():
-        ap.error(f"找不到 OWASP testcode：{TESTCODE}（先跑 benchmarks/owasp/run.py 克隆）")
-    if not EXPECTED.exists():
-        ap.error(f"找不到 expectedresults：{EXPECTED}")
+    _ensure_benchmark(ap, auto_clone=not args.no_auto_clone)
 
     files = _collect_files()
     if args.per_file:

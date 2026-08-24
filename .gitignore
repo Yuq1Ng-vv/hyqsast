@@ -22,6 +22,9 @@ examples/Real-Vuln-Benchmark/
 # OWASP 分块扫描产物（65MB+ JSON 报告，可经 benchmarks/owasp/ 重新生成）
 benchmarks/owasp/results/
 
+# OWASP Benchmark 源码（第三方基准，chunk_scan.py 首次运行自动 clone，不入库）
+benchmarks/owasp-benchmark/
+
 # 性能探针生成产物（可经 perf_gen_probes.py 重新生成）
 perf_probes/
 repro_py_fp/
