@@ -145,7 +145,7 @@ class CallGraphBuilder:
 
     # ── Import resolution ───────────────────────────────────────────────
 
-    def resolve_imports(self) -> dict[str, str]:
+    def resolve_imports(self, progress: object | None = None) -> dict[str, str]:
         """Resolve imports across all added files.
 
         Returns a mapping ``{qualified_name: file_path}`` for all
@@ -158,6 +158,10 @@ class CallGraphBuilder:
 
         Third-party and standard-library imports are left unresolved.
 
+        ``progress``（可选）：按文件上报进度（每文件 step）。build_calls 的
+        「跨文件调用边」阶段把 set_total 提前到本函数之前，本函数每文件 step
+        ——全库 import 模块路径探测（大项目最慢的前置）期间进度条持续走动，
+        不再静默跑完前置才重置阶段条。
         """
         # Pre-build a filename → [paths] index for collision-aware lookup.
         # Multiple directories may contain e.g. `utils.py` — we collect
@@ -196,6 +200,9 @@ class CallGraphBuilder:
                     # Also resolve the module itself
                     resolved[imp.module] = target
 
+            if progress is not None:
+                progress.step(1)
+
         return resolved
 
     # ── Cross-file call resolution ──────────────────────────────────────
@@ -215,7 +222,36 @@ class CallGraphBuilder:
         ``progress``（可选）：按文件上报进度（set_total + 每文件 step），
         供 CPGGraphBuilder.add_directory 的「跨文件调用边」阶段实时出 ETA。
         """
-        resolved_imports = self.resolve_imports()
+        cross_edges: list[CallEdge] = []
+
+        # 每文件 import 的名字集合（遮蔽检测用）+ 工作单元统计合并一趟。
+        # 必须放在 resolve_imports 之前：total_units 一旦算好就 set_total，把
+        # 阶段条从上一子阶段（索引文件）的 100% 立即重置成 0/N——否则 build_calls
+        # 的慢前置（resolve_imports 全库 import 模块路径探测，7 万文件下几分钟）
+        # 期间阶段条一直显示旧 100%，用户以为卡死（「索引文件结束卡 100%，不知道
+        # 跨文件调用边开始没」）。
+        imported_names: dict[str, set[str]] = {}
+        total_units = 0
+        for fp, imps in self._imports.items():
+            names = {n for imp in imps for n in imp.names}
+            imported_names[fp] = names
+            cg = self._graphs.get(fp)
+            if cg is not None:
+                total_units += len(cg.unresolved)
+                total_units += sum(
+                    1 for e in cg.edges if e.is_resolved and e.callee in names
+                )
+        # 工作单元 = resolve_imports 按文件 step 的底数（len(_graphs)）+
+        # 未解析调用数 + 本地遮蔽补发调用数。按调用粒度 step（而非每文件一步）：
+        # 真实项目里单个文件几十个跨文件调用 × 上千同名定义文件时，解析要跑很久
+        # ——每文件一步会让进度条卡在 0% 看着像冻住。按调用推进，病态文件里条也
+        # 持续走、ETA 反映真实速率。
+        if progress is not None:
+            progress.set_total(total_units + len(self._graphs))
+
+        # 慢前置带进度：resolve_imports 每文件 step —— 阶段条从 build_calls 一
+        # 开始就走动（全库 import 探测），而不是静默跑完前置才重置。
+        resolved_imports = self.resolve_imports(progress=progress)
 
         # 全局反向索引：target 文件 → 所有指向它的 qualified 名（_is_reachable 用）。
         # 原实现每个候选扫整个 resolved_imports（O(R)），这里预建一次 O(R) 的
@@ -225,8 +261,6 @@ class CallGraphBuilder:
         quals_by_target: dict[str, set[str]] = {}
         for _q, _t in resolved_imports.items():
             quals_by_target.setdefault(_t, set()).add(_q)
-
-        cross_edges: list[CallEdge] = []
 
         # BUG 54: 每文件 alias→模块 表（``import X as Y`` 的 Y）。receiver 解析用：
         # 调用点 ``Y.process(...)`` → 按 Y 反查 module → 解析到具体文件，把跨模块
@@ -238,25 +272,6 @@ class CallGraphBuilder:
         alias_to_module, alias_ambiguous = self._alias_tables()
         file_index = self._file_index()
 
-        # 每文件 import 的名字集合（遮蔽检测用）
-        imported_names: dict[str, set[str]] = {}
-        for fp, imps in self._imports.items():
-            imported_names[fp] = {n for imp in imps for n in imp.names}
-
-        if progress is not None:
-            # 工作单元 = 文件数 + 未解析调用数 + 本地遮蔽补发调用数。
-            # 按调用粒度 step（而非每文件一步）：真实项目里单个文件几十个跨
-            # 文件调用 × 上千同名定义文件时，解析要跑很久——每文件一步会让
-            # 进度条卡在 0% 看着像冻住（「卡在跨文件调用边」）。按调用推进，
-            # 病态文件里条也持续走、ETA 反映真实速率。
-            total_units = len(self._graphs)
-            for fp, cg in self._graphs.items():
-                total_units += len(cg.unresolved)
-                imp = imported_names.get(fp, set())
-                total_units += sum(
-                    1 for e in cg.edges if e.is_resolved and e.callee in imp
-                )
-            progress.set_total(total_units)
         for file_path, cg in self._graphs.items():
             imports_for_file = self._imports.get(file_path, [])
             imported_modules = {imp.module for imp in imports_for_file}

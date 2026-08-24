@@ -157,7 +157,7 @@ class _RichProgress(Progress):
         # ETA 收敛而不是永远增长。
         self._prior_total = 3600.0  # 名义总时长（秒），仅初始化每个阶段的先验
         self._phase_t0 = 0.0        # 当前阶段 begin 时刻（monotonic）
-        self._phase_prior = 1.0     # 当前阶段预估总时长（秒）
+        self._phase_prior = 1.0     # 当前阶段预估总时长（秒，权重先验，固定不变）
         self._cur_w_eff = 0.0       # 当前阶段实际权重（超时上浮）
         self._weight_done = 0.0     # 已完成阶段的实际权重累计（fold 折入）
         self._phase_has_substages = False  # 本阶段是否调过 set_total（子阶段模式）
@@ -207,7 +207,15 @@ class _RichProgress(Progress):
         if self._stage_current is not None:
             self._stage_chain.append(self._stage_current)
         self._stage_current = label
-        self._bar.update(self._phase_id, description=self._phase_desc())
+        # reset（而非 update）把 completed 归零：子阶段切换时上一子阶段的
+        # completed（如索引文件 100%）对新子阶段毫无意义——新子阶段往往先跑一段
+        # 慢前置（build_calls 的 resolve_imports 全库 import 探测）再 set_total，
+        # 期间若保留旧 100% 用户会以为卡死（「索引文件结束卡 100%，不知道跨文件
+        # 调用边开始没」）。reset 到 0% + 描述栏显示「✓ 上一子阶段 ▶ 新子阶段」
+        # → 用户立刻知道新子阶段已开始；随后 set_total(n) 再给真实总量。
+        # （rich 的 reset 里 total=None 表示「保留当前 total」，无法经公共 API
+        # 置回不定长；0% 已足够表达「新子阶段刚开始、总量待定」。）
+        self._bar.reset(self._phase_id, completed=0, description=self._phase_desc())
 
     def set_total(self, n: int) -> None:
         self._phase_total = n
@@ -220,19 +228,18 @@ class _RichProgress(Progress):
     def step(self, n: int = 1) -> None:
         self._phase_done += n
         self._bar.advance(self._phase_id, n)
-        # 自适应先验：用当前子阶段实测速率推阶段全长——阶段若实际比先验慢，
-        # 先验上修 → 总体 ETA 的冻结值跟着涨，不会一直停在乐观值。set_total
-        # 会 reset rich 任务（start_time 归零），所以 task.elapsed 在子阶段
-        # 模式下就是当前子阶段已用时间。frac 太小时跳过，避免子阶段起步瞬间
-        # 的微小进度把先验撑爆。
-        task = self._bar.tasks[self._phase_id]
-        if task.total and task.completed > 0 and task.elapsed > 0:
-            frac = task.completed / task.total
-            if frac > 0.02:
-                projected = task.elapsed / frac
-                mult = 2.0 if self._phase_has_substages else 1.0
-                cap = self._cur_w_eff / 100.0 * self._prior_total * 6.0
-                self._phase_prior = max(self._phase_prior, min(projected * mult, cap))
+        # 不再自适应先验：先验固定为权重先验（begin 时设定），靠 _overall_completed
+        # 的超时上浮分支（cur_w_eff 无界膨胀 + frac=1）让 c 持续爬升。
+        #
+        # 为什么固定：任何在阶段内变化的先验都让 c 要么「闪烁」（旧实现 per-step
+        # max 上修——一次病态调用把先验楔到几小时，ETA 在几十分钟↔几小时间跳）要么
+        # 「平台化」（先验跟踪 elapsed → c = w·E/P 恒定）。固定先验下数学是干净的：
+        #   c = w·E/P / (w·E/P + R) —— E 增长 → c 从 0 平滑爬到 55%→87%→93%，永
+        #   不平台化（这正是用户要的「进度条一直走」）；
+        #   ETA = R·prior/w —— 超时期间恒定，不闪、不塌成 0、不线性涨。
+        # 子阶段速率波动（快慢子阶段、上千同名候选的病态调用）不再影响总体条。
+        # 代价：ETA 绝对值是「剩余 45% 权重按权重先验速率」的估计，建图真比 55% 重
+        # 时偏低——但阶段切换时 weight_done 折入实际权重，总估计逐阶段自我修正。
         self._bar.update(self._overall_id, completed=self._overall_completed())
 
     def end(self) -> None:
