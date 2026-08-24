@@ -10,6 +10,7 @@ See DESIGN-IMPLEMENTATION.md Section 2.2 for the interface specification.
 from __future__ import annotations
 
 import os
+from bisect import bisect_left
 from pathlib import Path
 from typing import ClassVar
 
@@ -253,7 +254,7 @@ class CallGraphBuilder:
         # 开始就走动（全库 import 探测），而不是静默跑完前置才重置。
         resolved_imports = self.resolve_imports(progress=progress)
 
-        # 全局反向索引：target 文件 → 所有指向它的 qualified 名（_is_reachable 用）。
+        # 全局反向索引：target 文件 → 所有指向它的 qualified 名（可达性判断用）。
         # 原实现每个候选扫整个 resolved_imports（O(R)），这里预建一次 O(R) 的
         # target→quals 索引，候选检查只遍历该 target 的少数 qualified 名（通常
         # 1-5 个，绝大多数 import 不可解析则空）——布尔结果与迭代顺序无关，语义
@@ -261,6 +262,17 @@ class CallGraphBuilder:
         quals_by_target: dict[str, set[str]] = {}
         for _q, _t in resolved_imports.items():
             quals_by_target.setdefault(_t, set()).add(_q)
+
+        # 扁平前缀索引：所有 (qualified 名, target) 按名排序，供每文件可达集
+        # 预计算（O1）用 bisect 前缀区间一次建出。区间 [m, m 的字典后继) 恰好
+        # 捕获全部 q.startswith(m)（含 q == m）——对 ASCII 模块名严格等价于
+        # 原 _is_reachable 的 ``q.startswith(m) or m == q``，结果恒等。
+        _flat_entries = sorted(
+            (_q, _t) for _t, _qs in quals_by_target.items() for _q in _qs
+        )
+        _flat_quals = [_q for _q, _ in _flat_entries]
+        _flat_targets = [_t for _, _t in _flat_entries]
+        del _flat_entries
 
         # BUG 54: 每文件 alias→模块 表（``import X as Y`` 的 Y）。receiver 解析用：
         # 调用点 ``Y.process(...)`` → 按 Y 反查 module → 解析到具体文件，把跨模块
@@ -277,6 +289,20 @@ class CallGraphBuilder:
             imported_modules = {imp.module for imp in imports_for_file}
             imp_names = imported_names.get(file_path, set())
 
+            # O1: 每文件懒预计算可达目标集 —— _is_reachable(target) 只依赖
+            # (target, imported_modules)，与 callee/receiver 无关，所以每个文件
+            # 算一次、该文件全部调用点共享。候选循环从「每候选 × |imports|×|quals|
+            # 内层循环」降为「每候选一次集合成员判断」：build_calls 成本从
+            # Σ调用×候选×|imports|×|quals| 降到 Σ调用×候选 + Σ文件×|imports|。
+            # 内存 O(R) + 单文件瞬时集（随循环迭代被回收），不按调用方持久存集合。
+            # bisect 前缀区间 == 原 q.startswith(m) or m==q，结果恒等。
+            caller_reachable: set[str] = set()
+            for m in imported_modules:
+                lo = bisect_left(_flat_quals, m)
+                hi = bisect_left(_flat_quals, m[:-1] + chr(ord(m[-1]) + 1))
+                for i in range(lo, hi):
+                    caller_reachable.add(_flat_targets[i])
+
             def _append(
                 callee: str,
                 caller: str,
@@ -289,7 +315,7 @@ class CallGraphBuilder:
                 # 默认参数在定义时绑定当前迭代的循环变量（B023：闭包延迟
                 # 绑定会拿到最后一次迭代的值，绑定为默认参数规避）。
                 file_path: str = file_path,
-                imported_modules: set[str] = imported_modules,
+                caller_reachable: set[str] = caller_reachable,
             ) -> None:
                 # Java receiver 收窄（BUG N）：receiver 有显式声明类型时传给
                 # _reachable_callee_files 按类型过滤候选类；无则 None 保持全连。
@@ -303,8 +329,7 @@ class CallGraphBuilder:
                     callee,
                     receiver,
                     receiver_type,
-                    imported_modules,
-                    quals_by_target,
+                    caller_reachable,
                     alias_to_module,
                     alias_ambiguous,
                     file_index,
@@ -390,8 +415,7 @@ class CallGraphBuilder:
         callee: str,
         receiver: str | None,
         receiver_type: str | None,
-        imported_modules: set[str],
-        quals_by_target: dict[str, set[str]],
+        caller_reachable: set[str],
         alias_to_module: dict[str, dict[str, str]],
         alias_ambiguous: dict[str, set[str]],
         file_index: dict[str, list[str]],
@@ -402,6 +426,10 @@ class CallGraphBuilder:
         同名函数全连（稠密伪边）。BUG 54: receiver 命中时精确收紧到 receiver
         指向的文件。BUG N: 本地遮蔽调用（本地已解析）也走这里补发跨文件边，
         保证过近似不漏报；Java receiver 有显式类型时按类型收窄候选类。
+
+        ``caller_reachable`` 是 build_calls 为调用方文件预计算好的可达目标集
+        （O1，与 callee/receiver 无关，见 build_calls 内注释）；候选检查从
+        「每候选 × |imports|×|quals| 内层循环」降为一次集合成员判断。
         """
         candidates = self._all_functions.get(callee, [])
         if not candidates:
@@ -441,9 +469,7 @@ class CallGraphBuilder:
             # Java only.
             same_dir = is_java and os.path.dirname(target_file) == caller_dir
 
-            if same_dir or self._is_reachable(
-                target_file, imported_modules, quals_by_target
-            ):
+            if same_dir or target_file in caller_reachable:
                 reachable_files.append(target_file)
 
         if receiver_candidates is not None:
@@ -882,27 +908,6 @@ class CallGraphBuilder:
                 return fp
         # Tie-break: shortest path (closest to base_dir usually)
         return min(candidates, key=len)
-
-    @staticmethod
-    def _is_reachable(
-        target_file: str,
-        imported_modules: set[str],
-        quals_by_target: dict[str, set[str]],
-    ) -> bool:
-        """Check if the caller（其 ``imported_modules``）can reach *target_file*.
-
-        语义与原版逐项等价：target 可达 ⟺ 存在指向它的 qualified 名 q，且调用方
-        导入的某模块 m 满足 ``q.startswith(m) or m == q``。原版每个候选扫整个全局
-        resolved_imports（O(R)），这里用 build_calls 预建的 ``quals_by_target``
-        反向索引，只遍历该 target 的少数 qualified 名（通常 1-5 个）——布尔结果
-        与遍历顺序无关，所以用 set 收集也恒等。
-        """
-        for qualified in quals_by_target.get(target_file, ()):
-            # Check if the caller imports some part of this module
-            for mod in imported_modules:
-                if qualified.startswith(mod) or mod == qualified:
-                    return True
-        return False
 
 
 # ─── Internal data type ──────────────────────────────────────────────────
