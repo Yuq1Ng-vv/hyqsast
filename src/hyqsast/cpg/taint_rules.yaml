@@ -2719,14 +2719,6 @@ java:
     # 命中 source → source 优先于 sink 把 exec 的 sink 标签吞掉，cmdi 全量漏报。
     # 移除该弱 source；需要「配置/环境输入」语义时另走 P2 配置类漏洞专项。
     - System.getProperties(
-    - '@RequestParam'
-    - '@PathVariable'
-    - '@RequestHeader'
-    - '@RequestPart'
-    - '@QueryParam'
-    - '@FormParam'
-    - '@PathParam'
-    - '@HeaderParam'
     xss:
     - request.getParameter(
     - req.getParameter(
@@ -2750,18 +2742,6 @@ java:
     - req.getRequestURI(
     - request.getRequestURL(
     - req.getRequestURL(
-    - '@RequestParam'
-    - '@PathVariable'
-    - '@RequestBody'
-    - '@RequestHeader'
-    - '@CookieValue'
-    - '@ModelAttribute'
-    - '@SessionAttribute'
-    - '@QueryParam'
-    - '@FormParam'
-    - '@PathParam'
-    - '@HeaderParam'
-    - '@CookieParam'
     path_traversal:
     - request.getParameter(
     - req.getParameter(
@@ -2783,12 +2763,8 @@ java:
     - req.getPart(
     - item.getSubmittedFileName(
     - part.getSubmittedFileName(
-    - '@RequestParam'
     - '@PathVariable'
-    - '@RequestPart'
     - MultipartFile.getOriginalFilename(
-    - '@QueryParam'
-    - '@FormParam'
     - '@PathParam'
     - file.getOriginalFilename(
     - multipartFile.getOriginalFilename(
@@ -2808,14 +2784,6 @@ java:
     - req.getRequestURL(
     - request.getRequestURI(
     - req.getRequestURI(
-    - '@RequestParam'
-    - '@PathVariable'
-    - '@RequestHeader'
-    - '@RequestPart'
-    - '@QueryParam'
-    - '@FormParam'
-    - '@PathParam'
-    - '@HeaderParam'
     deserialization:
     - request.getInputStream(
     - item.getInputStream(
@@ -2829,11 +2797,8 @@ java:
     - req.getCookies(
     - request.getPart(
     - req.getPart(
-    - '@RequestBody'
     - '@RequestPart'
-    - '@CookieValue'
     - MultipartFile
-    - '@FormParam'
     - ObjectInputStream
     open_redirect:
     - request.getParameter(
@@ -2846,11 +2811,6 @@ java:
     - req.getRequestURL(
     - request.getRequestURI(
     - req.getRequestURI(
-    - '@RequestParam'
-    - '@PathVariable'
-    - '@QueryParam'
-    - '@FormParam'
-    - '@PathParam'
     code_injection:
     - request.getParameter(
     - req.getParameter(
@@ -2864,25 +2824,12 @@ java:
     - req.getReader(
     - request.getQueryString(
     - req.getQueryString(
-    - '@RequestParam'
-    - '@PathVariable'
-    - '@RequestBody'
-    - '@RequestHeader'
-    - '@RequestPart'
-    - '@QueryParam'
-    - '@FormParam'
-    - '@PathParam'
-    - '@HeaderParam'
     auth_bypass:
     - request.getCookies(
     - req.getCookies(
     - request.getHeader("Authorization"
     - req.getHeader("Authorization"
     - request.getSession().getAttribute(
-    - '@RequestHeader'
-    - '@CookieValue'
-    - '@HeaderParam'
-    - '@CookieParam'
     xxe:
     - request.getParameter(
     - req.getParameter(
@@ -2892,10 +2839,6 @@ java:
     - req.getReader(
     - request.getPart(
     - req.getPart(
-    - '@RequestBody'
-    - '@RequestPart'
-    - '@RequestParam'
-    - '@FormParam'
     jndi_injection:
     - request.getParameter(
     - req.getParameter(
@@ -2903,22 +2846,11 @@ java:
     - req.getHeader(
     - request.getCookies(
     - req.getCookies(
-    - '@RequestParam'
-    - '@RequestHeader'
-    - '@PathVariable'
-    - '@CookieValue'
-    - '@HeaderParam'
     ssti:
     - request.getParameter(
     - req.getParameter(
     - request.getHeader(
     - req.getHeader(
-    - '@RequestParam'
-    - '@PathVariable'
-    - '@RequestBody'
-    - '@RequestHeader'
-    - '@QueryParam'
-    - '@FormParam'
     xpath_injection:
     ldap_injection:
     injection_general:
@@ -2941,14 +2873,12 @@ java:
     - request.getReader(
     - req.getReader(
     - '@RequestParam'
-    - '@PathVariable'
     - '@RequestBody'
     - '@RequestHeader'
     - '@CookieValue'
     - '@ModelAttribute'
     - '@QueryParam'
     - '@FormParam'
-    - '@PathParam'
     - '@HeaderParam'
     - '@CookieParam'
     - '@MatrixParam'
@@ -2961,10 +2891,12 @@ java:
     - .params(
     - '@QueryValue'
     - '@Body'
-    - params.
+    - request.params.
+    - req.params.
     - .request().getParam(
     - DataFetchingEnvironment.getArgument(
     - graphql.ExecutionInput
+    - '@SessionAttribute'
   sinks:
     sql_injection:
     - .executeQuery(
