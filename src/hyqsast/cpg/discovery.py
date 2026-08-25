@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import deque
 from typing import TYPE_CHECKING
 
-from hyqsast.cpg.graph import EDGE_CALLS, EDGE_DATA_FLOW, NODE_ASSIGNMENT
+from hyqsast.cpg.graph import EDGE_CALLS, EDGE_DATA_FLOW, NODE_ASSIGNMENT, NODE_PARAMETER
 from hyqsast.cpg.types import ExposedEndpoint, HeuristicSink, UncoveredSink
 
 if TYPE_CHECKING:
@@ -357,24 +357,33 @@ class SourceCompletenessChecker:
     # ── Internal helpers ─────────────────────────────────────────────────
 
     def _handler_has_source(self, handler_func: str, file_path: str) -> bool:
-        """Check whether any assignment in *handler_func* matches a YAML source pattern."""
+        """Check whether *handler_func* has any known taint source.
+
+        Source 有两种存在形式：① 赋值节点匹配到 YAML source 模式；② 参数
+        节点被标了 ``taint_source``（如 ``@RequestParam`` / ``@PathVariable``
+        注解参数，见 graph.py ``_label_taint_nodes`` 的 NODE_PARAMETER 分支）。
+        原来只查 ①，纯 ``@RequestParam`` handler 被误报成 ``endpoint_no_source``
+        （对抗审查 F5，3 个审查员独立命中）。
+        """
         for _, data in self._graph.nodes(data=True):
-            if data.get("node_type") != NODE_ASSIGNMENT:
-                continue
             if data.get("enclosing_function") != handler_func:
                 continue
             if file_path and data.get("file_path") != file_path:
                 continue
-            src = data.get("source", "")
-            if not src:
-                continue
-
-            # Try all available languages (source patterns are fairly cross-language)
-            for lang in self._taint_loader.available_languages:
-                try:
-                    if self._taint_loader.match_source(lang, src):
-                        return True
-                except (KeyError, AttributeError):
+            node_type = data.get("node_type")
+            if node_type == NODE_ASSIGNMENT:
+                src = data.get("source", "")
+                if not src:
                     continue
+                # Try all available languages (source patterns are fairly cross-language)
+                for lang in self._taint_loader.available_languages:
+                    try:
+                        if self._taint_loader.match_source(lang, src):
+                            return True
+                    except (KeyError, AttributeError):
+                        continue
+            elif node_type == NODE_PARAMETER and data.get("taint_source"):
+                # 注解型 source：handler 只要有带 source 注解的参数就不是「无源」
+                return True
 
         return False

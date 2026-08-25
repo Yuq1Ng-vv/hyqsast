@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 
 # ─── 漏洞类型 → 严重级别默认映射 ───────────────────────────────────────────
@@ -277,6 +277,86 @@ def _node_ref_dict(n: NodeRef) -> dict:
     }
 
 
+# ─── 流式 JSON 写出（M2）───────────────────────────────────────────────────
+#
+# 旧实现 `json.dumps(to_dict())` 会同时物化三份内存：asdict 深拷贝的整棵
+# 结果树、完整 JSON 字符串、以及落盘的字符串本体。百万级 findings 报告在
+# 1.6GB 内存机器上直接 OOM。下面的流式写出器只保留一份转瞬即逝的叶子值，
+# 逐字段写盘，输出与 ``json.dumps(v, ensure_ascii=False, indent=2)``
+# 字节级一致（确定性不变）。
+
+# ScanResult 主报告排除的字段（不进 to_json，与 to_dict 的 pop 保持一致）。
+_SCAN_REPORT_EXCLUDE = frozenset({"canonical_findings", "taint_elements"})
+
+
+def _iter_json_items(obj, exclude: frozenset[str]) -> list[tuple[str, object]]:
+    """取 dict / dataclass 的可序列化字段对，保持插入/声明顺序。"""
+    if isinstance(obj, dict):
+        return [(k, v) for k, v in obj.items() if k not in exclude]
+    return [(f.name, getattr(obj, f.name)) for f in fields(obj) if f.name not in exclude]
+
+
+def _stream_scalar(fh, v) -> None:
+    fh.write(json.dumps(v, ensure_ascii=False))
+
+
+def _stream_value(fh, v, level: int, indent: int, exclude: frozenset[str]) -> None:
+    """把 *v* 流式写到 *fh*，格式等价 ``json.dumps(v, ensure_ascii=False, indent=indent)``。"""
+    if isinstance(v, dict) or is_dataclass(v):
+        _stream_dict(fh, v, level, indent, exclude)
+    elif isinstance(v, (list, tuple)):
+        _stream_list(fh, v, level, indent, exclude)
+    else:
+        _stream_scalar(fh, v)
+
+
+def _stream_list(fh, items, level: int, indent: int, exclude: frozenset[str]) -> None:
+    n = len(items)
+    if n == 0:
+        fh.write("[]")
+        return
+    fh.write("[\n")
+    pad = " " * (indent * (level + 1))
+    for i, it in enumerate(items):
+        fh.write(pad)
+        _stream_value(fh, it, level + 1, indent, exclude)
+        if i < n - 1:
+            fh.write(",")
+        fh.write("\n")
+    fh.write(" " * (indent * level))
+    fh.write("]")
+
+
+def _stream_dict(fh, obj, level: int, indent: int, exclude: frozenset[str]) -> None:
+    items = _iter_json_items(obj, exclude)
+    if not items:
+        fh.write("{}")
+        return
+    fh.write("{\n")
+    pad = " " * (indent * (level + 1))
+    n = len(items)
+    for i, (k, v) in enumerate(items):
+        fh.write(pad)
+        _stream_scalar(fh, k)
+        fh.write(": ")
+        _stream_value(fh, v, level + 1, indent, exclude)
+        if i < n - 1:
+            fh.write(",")
+        fh.write("\n")
+    fh.write(" " * (indent * level))
+    fh.write("}")
+
+
+def _stream_dump(obj, path, *, indent: int = 2, exclude: frozenset[str] = frozenset()) -> None:
+    """流式把 *obj* 落盘为 JSON，字节级等价 ``json.dumps(obj, ensure_ascii=False, indent=indent)``。
+
+    内存占用与报告规模解耦：任意时刻只持有一个叶子标量，不物化整棵深拷贝树
+    与整串 JSON（内存铁律 M2）。
+    """
+    with open(path, "w", encoding="utf-8") as fh:
+        _stream_value(fh, obj, 0, indent, exclude)
+
+
 @dataclass
 class ScanResult:
     """``scan()`` 的顶层返回结构。"""
@@ -303,10 +383,16 @@ class ScanResult:
         return d
 
     def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
-        """序列化为 JSON 字符串；若给定 ``path`` 则同时落盘。"""
-        text = json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+        """序列化为 JSON 字符串；若给定 ``path`` 则流式落盘。
+
+        给定 ``path`` 时流式写出（输出字节与旧 ``json.dumps`` 完全一致，但
+        不物化整串，避免百万 findings 报告的三份内存峰值），返回空串；
+        ``path`` 为 ``None`` 时保持旧行为，返回完整 JSON 字符串。
+        """
         if path is not None:
-            Path(path).write_text(text, encoding="utf-8")
+            _stream_dump(self, path, indent=indent, exclude=_SCAN_REPORT_EXCLUDE)
+            return ""
+        text = json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
         return text
 
     def to_elements_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
@@ -315,24 +401,26 @@ class ScanResult:
         供漏报排查：列出本次扫描识别到的全部 source/sink 点、命中规则及
         ``covered`` 标记。
         """
+        if path is not None:
+            _stream_dump(self.taint_elements, path, indent=indent)
+            return ""
         text = json.dumps(
             [asdict(e) for e in self.taint_elements],
             ensure_ascii=False,
             indent=indent,
         )
-        if path is not None:
-            Path(path).write_text(text, encoding="utf-8")
         return text
 
     def to_canonical_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
         """序列化规范版报告（``list[CanonicalFinding]``）；给定 ``path`` 则落盘。"""
+        if path is not None:
+            _stream_dump(self.canonical_findings, path, indent=indent)
+            return ""
         text = json.dumps(
             [asdict(c) for c in self.canonical_findings],
             ensure_ascii=False,
             indent=indent,
         )
-        if path is not None:
-            Path(path).write_text(text, encoding="utf-8")
         return text
 
     def to_flat_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
@@ -366,9 +454,10 @@ class ScanResult:
                 for f in self.findings
             ],
         }
-        text = json.dumps(payload, ensure_ascii=False, indent=indent)
         if path is not None:
-            Path(path).write_text(text, encoding="utf-8")
+            _stream_dump(payload, path, indent=indent)
+            return ""
+        text = json.dumps(payload, ensure_ascii=False, indent=indent)
         return text
 
     def to_canonical_route_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
@@ -382,9 +471,10 @@ class ScanResult:
             {**asdict(c), "endpoint": _pure_route(f.endpoint)}
             for c, f in zip(self.canonical_findings, self.findings, strict=False)
         ]
-        text = json.dumps(rows, ensure_ascii=False, indent=indent)
         if path is not None:
-            Path(path).write_text(text, encoding="utf-8")
+            _stream_dump(rows, path, indent=indent)
+            return ""
+        text = json.dumps(rows, ensure_ascii=False, indent=indent)
         return text
 
     def to_canonical_agg_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
@@ -425,7 +515,8 @@ class ScanResult:
                 }
             )
 
-        text = json.dumps(rows, ensure_ascii=False, indent=indent)
         if path is not None:
-            Path(path).write_text(text, encoding="utf-8")
+            _stream_dump(rows, path, indent=indent)
+            return ""
+        text = json.dumps(rows, ensure_ascii=False, indent=indent)
         return text

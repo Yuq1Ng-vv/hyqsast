@@ -8,6 +8,7 @@ and security annotations.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,8 +28,12 @@ _SPRING_METHOD_ANNOTATIONS = {
     "PutMapping": "PUT",
     "DeleteMapping": "DELETE",
     "PatchMapping": "PATCH",
-    "RequestMapping": "GET",  # default, may be overridden by method= attribute
+    "RequestMapping": "GET",  # 仅占位；裸 @RequestMapping 走 _ALL_SPRING_METHODS
 }
+
+# 裸 @RequestMapping（无 method= 属性）映射到全部 HTTP 方法（Spring 语义，
+# F4 修复前错误地只默认 GET）。
+_ALL_SPRING_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 
 
 def _merge_routes(prefix: str, route: str) -> str:
@@ -146,13 +151,13 @@ class SpringExtractor(BaseFrameworkExtractor):
                 _feign_name, feign_url = feign_info
                 route_annotation = self._find_route_annotation(node)
                 if route_annotation is not None:
-                    http_method, route_pattern = route_annotation
+                    http_methods, route_pattern = route_annotation
                     if feign_url:
                         route_pattern = _merge_routes(feign_url, route_pattern)
                     endpoints.append(
                         HttpEndpoint(
                             route=route_pattern,
-                            methods=[http_method],
+                            methods=http_methods,
                             handler_func=method_name,
                             file_path=path,
                             line=self._line(node),
@@ -175,7 +180,7 @@ class SpringExtractor(BaseFrameworkExtractor):
             if route_annotation is None:
                 continue
 
-            http_method, route_pattern = route_annotation
+            http_methods, route_pattern = route_annotation
 
             # BUG 11: Merge class-level @RequestMapping prefix
             class_prefix = self._find_class_route_prefix(node)
@@ -194,7 +199,7 @@ class SpringExtractor(BaseFrameworkExtractor):
             endpoints.append(
                 HttpEndpoint(
                     route=route_pattern,
-                    methods=[http_method],
+                    methods=http_methods,
                     handler_func=method_name,
                     file_path=path,
                     line=self._line(node),
@@ -210,54 +215,75 @@ class SpringExtractor(BaseFrameworkExtractor):
 
     # ── Annotation parsing ──────────────────────────────────────────────
 
-    def _find_route_annotation(self, method_node: Node) -> tuple[str, str] | None:
-        """Find the first Spring mapping annotation, return (HTTP_method, route).
+    def _find_route_annotation(self, method_node: Node) -> tuple[list[str], str] | None:
+        """Find all Spring mapping annotations; return ``(HTTP_methods, route)``.
 
-        For ``@RequestMapping``, also checks the ``method=`` attribute
-        (e.g. ``method=RequestMethod.POST``) to determine the actual HTTP
-        method instead of always defaulting to GET (BUG 10).
+        三形态修复（对抗审查 F4）：
+        ① 多注解叠加（``@GetMapping`` + ``@PostMapping`` 同方法）原来只出
+           第一个 —— 现在收集全部方法的并集；
+        ② ``method={RequestMethod.POST, RequestMethod.GET}`` 数组原来只取
+           最后一个 —— 现在解析全部元素；
+        ③ 裸 ``@RequestMapping``（无 ``method=``）原来默认 GET —— 现在视为
+           映射到全部 HTTP 方法（Spring 语义）。
+
+        路由取第一个映射注解声明的值（同方法多注解不同路由属非法配置）。
         """
         for child in method_node.children:
             if child.type != "modifiers":
                 continue
-            modifiers_text = self._source(child)
-
-            for ann_name, http_method in _SPRING_METHOD_ANNOTATIONS.items():
-                if ann_name not in modifiers_text:
+            methods: list[str] = []
+            route = "/"
+            found = False
+            for sub in self._walk_subtree(child):
+                if sub.type != "annotation":
                     continue
-
-                # Extract route string from annotation value
-                route = "/"
-                method_override: str | None = None
-                for sub in self._walk_subtree(child):
-                    if sub.type == "annotation":
-                        ann_text = self._source(sub)
-                        if ann_name in ann_text:
-                            route = self._extract_annotation_value(sub) or route
-                            # BUG 10: @RequestMapping can specify method= attribute
-                            if ann_name == "RequestMapping":
-                                method_override = self._extract_method_attribute(sub)
-                            break
-
-                if ann_name == "RequestMapping" and method_override:
-                    return method_override, route
-                return http_method, route
-
+                ann_text = self._source(sub)
+                # 注解名 = 去掉 `@`、取到第一个 `(` 前的标识符
+                ann_name = ann_text.split("(", 1)[0].lstrip().removeprefix("@").strip()
+                if ann_name not in _SPRING_METHOD_ANNOTATIONS:
+                    continue
+                found = True
+                if not methods:
+                    route = self._extract_annotation_value(sub) or route
+                if ann_name == "RequestMapping":
+                    ms = self._extract_methods_attribute(sub)
+                    if ms:
+                        methods.extend(ms)
+                    else:
+                        methods.append("ALL")  # 裸 @RequestMapping 哨兵
+                else:
+                    methods.append(_SPRING_METHOD_ANNOTATIONS[ann_name])
+            if not found:
+                continue
+            # 裸 @RequestMapping（"ALL" 哨兵）→ 全部方法；否则去重保序
+            if "ALL" in methods:
+                return list(_ALL_SPRING_METHODS), route
+            return list(dict.fromkeys(methods)), route
         return None
 
     @staticmethod
-    def _extract_method_attribute(ann_node: Node) -> str | None:
-        """Extract ``method=RequestMethod.X`` from a ``@RequestMapping`` annotation (BUG 10)."""
-        for child in ann_node.children:
-            if child.type == "element_value_pair":
-                name_node = child.child_by_field_name("name")
-                if name_node and name_node.text and name_node.text.decode() == "method":
-                    val_node = child.child_by_field_name("value")
-                    if val_node is not None and hasattr(val_node, "text") and val_node.text:
-                        val_text = val_node.text.decode()
-                        if "RequestMethod." in val_text:
-                            return val_text.split("RequestMethod.")[-1].strip()
-        return None
+    def _extract_methods_attribute(ann_node: Node) -> list[str]:
+        """Extract all ``method=RequestMethod.X`` from a ``@RequestMapping``.
+
+        支持单值 ``method=RequestMethod.POST`` 与数组
+        ``method={RequestMethod.POST, RequestMethod.GET}``（数组原来只取
+        最后一个，F4 修复）。无 ``method=`` 属性返回空列表（裸映射 = 全部方法）。
+        """
+        # element_value_pair 嵌在 annotation_argument_list 里，不在 annotation
+        # 的直接 children —— 需走子树；且 key 标识符不是命名字段（tree-sitter
+        # java 对 element_value_pair 无 "name" 字段），取第一个命名 child。
+        # 两点都与 _extract_element_value 同款做法。
+        for child in SpringExtractor._walk_subtree(ann_node):
+            if child.type != "element_value_pair":
+                continue
+            named = [c for c in child.children if c.is_named]
+            if not named or SpringExtractor._source(named[0]) != "method":
+                continue
+            val_node = child.child_by_field_name("value")
+            if val_node is None or not hasattr(val_node, "text") or not val_node.text:
+                continue
+            return re.findall(r"RequestMethod\.([A-Za-z_]+)", val_node.text.decode())
+        return []
 
     def _find_class_route_prefix(self, method_node: Node) -> str:
         """Return the class-level ``@RequestMapping`` route prefix, or ``""`` (BUG 11).

@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 _LANGUAGE_FRAMEWORKS: dict[str, list[str]] = {
     "python": ["flask", "django", "fastapi", "connexion"],
     "javascript": ["express"],
-    "java": ["spring"],
+    "java": ["spring", "jaxrs"],  # N2: jaxrs 提取器接通，JAX-RS 应用不再接口全漏
 }
 
 
@@ -300,13 +300,24 @@ class Analyzer:
             # 语义恒等：被跳过的源点本就会产出空结果；剪掉的节点不在任何合法
             # src→sink 路径上，跳过/剪枝不改变任何 finding（见 _sink_reachable）。
             reachable = self._sink_reachable(sink_set, _BFS_MAX_DEPTH)
+            # N3: 早退条件必须覆盖「图里存在 sink 的全部类别」。原来只查
+            # per_category 里已见的类别：source 排序导致某类别先饱和时提前
+            # break，排在后面的类别（还没轮到它的 source）被整类饿死（FN）。
+            # 换成 sink 类别全集后，未产出类别 get()=0 < cap → 不会提前 break；
+            # 已饱和类别仍能触发早退（预算保护不丢）。
+            target_categories = {
+                cat
+                for n in sink_set
+                for cat in self._sink_categories(n)
+            }
             prog.set_total(len(source_ids))
             for src in source_ids:
                 prog.step(1)
                 if src not in reachable:
                     continue
                 if per_category and all(
-                    c >= self.max_findings_per_category for c in per_category.values()
+                    per_category.get(c, 0) >= self.max_findings_per_category
+                    for c in target_categories
                 ):
                     break
                 for node_ids, edge_types in self._bfs_to_sink(src, sink_set, reachable=reachable):

@@ -44,11 +44,13 @@ from hyqsast.cpg.frameworks.django import DjangoExtractor  # noqa: E402
 from hyqsast.cpg.frameworks.express import ExpressExtractor  # noqa: E402
 from hyqsast.cpg.frameworks.fastapi import FastAPIExtractor  # noqa: E402
 from hyqsast.cpg.frameworks.flask import FlaskExtractor  # noqa: E402
+from hyqsast.cpg.frameworks.jaxrs import JaxRsExtractor  # noqa: E402
 from hyqsast.cpg.frameworks.spring import SpringExtractor  # noqa: E402
 
 _register("flask", FlaskExtractor)
 _register("django", DjangoExtractor)
 _register("fastapi", FastAPIExtractor)
 _register("express", ExpressExtractor)
+_register("jaxrs", JaxRsExtractor)
 _register("spring", SpringExtractor)
 _register("connexion", ConnexionExtractor)
