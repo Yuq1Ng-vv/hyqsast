@@ -290,20 +290,53 @@ _CONTAINER_WRITE_METHODS = frozenset(
 _CONTAINER_TYPES = frozenset(
     {
         # Map 家族
-        "Map", "HashMap", "LinkedHashMap", "TreeMap", "ConcurrentHashMap",
-        "Hashtable", "WeakHashMap", "IdentityHashMap", "Properties",
-        "SortedMap", "NavigableMap",
+        "Map",
+        "HashMap",
+        "LinkedHashMap",
+        "TreeMap",
+        "ConcurrentHashMap",
+        "Hashtable",
+        "WeakHashMap",
+        "IdentityHashMap",
+        "Properties",
+        "SortedMap",
+        "NavigableMap",
         # Collection / List / Set / 队列
-        "Collection", "Iterable", "List", "ArrayList", "LinkedList", "Vector",
-        "Stack", "CopyOnWriteArrayList", "Set", "HashSet", "LinkedHashSet",
-        "TreeSet", "CopyOnWriteArraySet", "SortedSet", "NavigableSet",
-        "Queue", "Deque", "ArrayDeque", "PriorityQueue", "ConcurrentLinkedQueue",
-        "ArrayBlockingQueue", "LinkedBlockingQueue",
+        "Collection",
+        "Iterable",
+        "List",
+        "ArrayList",
+        "LinkedList",
+        "Vector",
+        "Stack",
+        "CopyOnWriteArrayList",
+        "Set",
+        "HashSet",
+        "LinkedHashSet",
+        "TreeSet",
+        "CopyOnWriteArraySet",
+        "SortedSet",
+        "NavigableSet",
+        "Queue",
+        "Deque",
+        "ArrayDeque",
+        "PriorityQueue",
+        "ConcurrentLinkedQueue",
+        "ArrayBlockingQueue",
+        "LinkedBlockingQueue",
         # 字符串缓冲 / 拼接
-        "StringBuilder", "StringBuffer", "StringJoiner",
+        "StringBuilder",
+        "StringBuffer",
+        "StringJoiner",
         # Web 会话 / 请求 / 属性容器
-        "HttpSession", "HttpServletRequest", "ServletRequest", "ServletContext",
-        "Session", "Cookie", "HttpCookie", "Attributes",
+        "HttpSession",
+        "HttpServletRequest",
+        "ServletRequest",
+        "ServletContext",
+        "Session",
+        "Cookie",
+        "HttpCookie",
+        "Attributes",
         # 单值容器
         "Optional",
         "Array",
@@ -441,9 +474,7 @@ class CPGGraphBuilder:
         return cache_root / f"{dir_hash}.pkl"
 
     @staticmethod
-    def _compute_source_fingerprint(
-        directory: Path, progress: object | None = None
-    ) -> str:
+    def _compute_source_fingerprint(directory: Path, progress: object | None = None) -> str:
         """Compute a fingerprint of all source files under *directory*.
 
         用 (相对路径, 内容 sha256) 逐文件 hash —— 同一路径、同尺寸但内容
@@ -875,19 +906,23 @@ class CPGGraphBuilder:
 
         # 收集跨函数状态槽（类字段 / 模块全局名）—— 供 _add_state_bridge 使用。
         # 需要先看完全部文件再连边，故在 add_file 循环前单独解析一遍。
-        prog.stage("收集跨函数状态槽")
-        prog.set_total(len(self._call_graph_builder.files))
-        self._state_slots = set()
-        for file_path in self._call_graph_builder.files:
-            lang = detect_by_extension(file_path)
-            if lang in self._parser.providers:
-                try:
-                    tree = self._parser.parse_file(file_path)
-                    provider = self._parser.get_provider(lang)
-                    self._state_slots |= provider.collect_state_slots(tree)
-                except (OSError, ValueError, FileNotFoundError):
-                    pass
-            prog.step(1)
+        # T4: 默认 enable_state_bridge=False 时 _state_slots 无人消费（_add_state_bridge
+        # 只在开启时调用），这一遍全库 parse 是纯浪费——收进开关内。默认路径下
+        # _state_slots 保持空集，_add_state_bridge 不会进入，结果字节恒等。
+        if self._enable_state_bridge:
+            prog.stage("收集跨函数状态槽")
+            prog.set_total(len(self._call_graph_builder.files))
+            self._state_slots = set()
+            for file_path in self._call_graph_builder.files:
+                lang = detect_by_extension(file_path)
+                if lang in self._parser.providers:
+                    try:
+                        tree = self._parser.parse_file(file_path)
+                        provider = self._parser.get_provider(lang)
+                        self._state_slots |= provider.collect_state_slots(tree)
+                    except (OSError, ValueError, FileNotFoundError):
+                        pass
+                prog.step(1)
 
         # Add each file's local information to the graph
         import contextlib
@@ -1128,7 +1163,6 @@ class CPGGraphBuilder:
 
             # 2) 位置匹配（medium）：call_args[i] → 第 i 个形参。
             #    跳过已被参数名匹配覆盖的实参，避免重复边。
-            positional_done = False
             if call_args and 0 < len(call_args) <= len(sorted_params):
                 for i, arg_text in enumerate(call_args):
                     if i >= len(sorted_params):
@@ -1143,19 +1177,13 @@ class CPGGraphBuilder:
                             edge_type=EDGE_DATA_FLOW,
                             confidence="medium",
                         )
-                        positional_done = True
 
-            # 3) 全连接兜底（low）：上面两级都没命中任何边时，退化为
-            #    所有实参 → 所有形参（过近似，保证不漏报）。
-            if not name_matched and not positional_done:
-                for arg_vid in caller_var_refs:
-                    for param_nid in param_nodes:
-                        self.graph.add_edge(
-                            arg_vid,
-                            param_nid,
-                            edge_type=EDGE_DATA_FLOW,
-                            confidence="low",
-                        )
+            # 3) 全连接兜底（low）—— 已删除（perf_probes/bfs_edge_audit.py 实测）：
+            #    这些边在 ureport2 上共 2,041 条（占 DATA_FLOW 1.7%），对反向可达集 R
+            #    零贡献（R 移除零收缩），即没有任何 source 仅靠它们可达 sink。纯冗余
+            #    边，删除不改变任何可达性与 finding 键集合。name/positional 未命中时
+            #    下面 call_site → callee_function → param 的 BUG N 承重边仍保证跨文件
+            #    同名函数多目标可达，不漏报。
 
             # DATA_FLOW edges through the call_site node itself:
             #   var_ref → call_site → callee_function → param
@@ -1848,18 +1876,30 @@ class CPGGraphBuilder:
         """
         if not specs:
             return
+        # T8 (性能): 原实现每 spec 全图扫一遍 —— O(Σspecs × 全图节点) 二次方，
+        # 7 万文件数千接口 × 数百万节点 = 数十亿次 Python 循环。改为预建
+        # (file_path, enclosing_function) → [param ids] 索引（复用 _nodes_by_file
+        # 一次全图遍历），每 spec O(本文件参数)。_nodes_by_file 含重复 id（缓存
+        # 恢复 + 增量 add 双写路径），seen 去重保证与全图迭代语义一致（每节点
+        # 至多打一次标；打标幂等，顺序无关，结果字节恒等）。
+        params_by_func: dict[tuple[str, str], list[str]] = {}
+        seen: set[str] = set()
+        for file_path, ids in self._nodes_by_file.items():
+            for nid in ids:
+                if nid in seen:
+                    continue
+                nd = self.graph.nodes[nid]
+                if nd.get("node_type") != NODE_PARAMETER:
+                    continue
+                seen.add(nid)
+                params_by_func.setdefault((file_path, nd.get("enclosing_function")), []).append(nid)
         for file_path, handler, names in specs:
-            for _nid, ndata in self.graph.nodes(data=True):
-                if ndata.get("node_type") != NODE_PARAMETER:
+            for nid in params_by_func.get((file_path, handler), []):
+                nd = self.graph.nodes[nid]
+                if names and nd.get("var_name") not in names:
                     continue
-                if ndata.get("file_path") != file_path:
-                    continue
-                if ndata.get("enclosing_function") != handler:
-                    continue
-                if names and ndata.get("var_name") not in names:
-                    continue
-                ndata["taint_source"] = "injection_general"
-                ndata["taint_category"] = "injection_general"
+                nd["taint_source"] = "injection_general"
+                nd["taint_category"] = "injection_general"
 
     @property
     def node_count(self) -> int:

@@ -700,14 +700,25 @@ class Analyzer:
 
         匹配依据见 :meth:`_endpoint_match_for_finding`；供 LLM 下游把漏洞
         直接对应到具体路由，无需自己 join ``endpoints`` 表。
+
+        T12 (性能): 原实现每 finding 两次全 endpoints 列表推导 —— O(findings ×
+        endpoints)，3.67M findings × 数千接口 = 10^10 元素比较。改为预建两个
+        保序索引（O(endpoints)），每 finding 两次 O(1) 查表；``candidates[0]``
+        仍取 endpoints 原序首个命中，语义逐字节一致。
         """
+        by_file_handler: dict[tuple[str, str], list[Endpoint]] = {}
+        by_file: dict[str, list[Endpoint]] = {}
+        for ep in endpoints:
+            by_file_handler.setdefault((ep.file_path, ep.handler_func), []).append(ep)
+            by_file.setdefault(ep.file_path, []).append(ep)
         for f in findings:
-            f.endpoint = self._endpoint_match_for_finding(f, endpoints)
+            f.endpoint = self._endpoint_match_for_finding(f, by_file_handler, by_file)
 
     def _endpoint_match_for_finding(
         self,
         f: Finding,
-        endpoints: list[Endpoint],
+        by_file_handler: dict[tuple[str, str], list[Endpoint]],
+        by_file: dict[str, list[Endpoint]],
     ) -> EndpointMatch:
         """返回 finding 与接口的对应关系（``exact`` / ``same_file`` / ``unmatched``）。
 
@@ -716,12 +727,8 @@ class Analyzer:
         冗余展开（不引用 endpoints 下标），保证 LLM 单条 finding 即可自洽。
         """
         src = f.source
-        exact = [
-            ep
-            for ep in endpoints
-            if ep.file_path == src.file_path and ep.handler_func == src.function
-        ]
-        candidates = exact or [ep for ep in endpoints if ep.file_path == src.file_path]
+        exact = by_file_handler.get((src.file_path, src.function), [])
+        candidates = exact or by_file.get(src.file_path, [])
         if not candidates:
             return EndpointMatch(match="unmatched")
         ep = candidates[0]
