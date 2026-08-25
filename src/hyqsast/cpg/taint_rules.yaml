@@ -13,13 +13,14 @@ python:
     - .args[
     - .cookies.get(
     - .cookies[
-    - .data
+    - request.data
     - .form.get(
     - .form[
-    - .get_data(
-    - .get_json(
-    - .headers.get(
-    - .headers[
+    - request.get_data(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
+    - request.headers[
     - .json.get(
     - .json[
     - .json_data.get(
@@ -55,17 +56,18 @@ python:
     command_injection:
     - .args.get(
     - .args[
-    - .body
+    - request.body
     - .cookies.get(
     - .filename
     - .filename.get(
     - .form.get(
     - .form[
-    - .get_json(
-    - .headers.get(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
     - .json.get(
     - .match_info.get(
-    - .payload
+    - request.payload
     - .query_params.get(
     - Body(
     - File(
@@ -101,9 +103,11 @@ python:
     - .cookies.get(
     - .form.get(
     - .form[
-    - .get_json(
-    - .headers.get(
-    - .json()
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
+    - request.json()
+    - req.json()
     - .json.get(
     - .match_info.get(
     - .query_params.get(
@@ -133,8 +137,9 @@ python:
     - .filename
     - .form.get(
     - .form[
-    - .get_json(
-    - .headers.get(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
     - .json.get(
     - .originalname
     - .part.name
@@ -169,18 +174,19 @@ python:
     - .args[
     - .callback_url
     - .cookies.get(
-    - .endpoint
     - .form.get(
     - .form[
-    - .get_data(
-    - .get_json(
-    - .headers.get(
+    - request.get_data(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
     - .json.get(
     - .match_info.get(
     - .notify_url
     - .query_params.get(
     - .redirect_uri
-    - .url
+    - request.url
+    - req.url
     - .values.get(
     - .webhook_url
     - Body(
@@ -201,15 +207,16 @@ python:
     - request.cookies
     deserialization:
     - .args.get(
-    - .body
+    - request.body
     - .file.read(
     - .filename
     - .form.get(
-    - .get_data(
-    - .get_json(
+    - request.get_data(
+    - request.get_json(
+    - req.get_json(
     - .get_signed_cookie(
     - .json.get(
-    - .payload
+    - request.payload
     - .read(
     - .stream.read(
     - Body(
@@ -233,8 +240,9 @@ python:
     - .continue
     - .form.get(
     - .form[
-    - .get_json(
-    - .headers.get(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
     - .json.get(
     - .next_url
     - .query_params.get(
@@ -264,8 +272,9 @@ python:
     - .cookies.get(
     - .form.get(
     - .form[
-    - .get_json(
-    - .headers.get(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
     - .json.get(
     - .query_params.get(
     - .values.get(
@@ -294,9 +303,10 @@ python:
     - .args.get(
     - .cookies.get(
     - .form.get(
-    - .headers.get(
+    - request.headers.get(
     - .json.get(
-    - Authorization
+    - request.headers.get('Authorization'
+    - request.headers['Authorization'
     - 'Bearer '
     - authorization
     - 'bearer '
@@ -305,7 +315,8 @@ python:
     - request.data.get(
     - request.session[
     - reset_token
-    - state
+    - request.args.get('state'
+    - request.form.get('state'
     - request.json
     - request.files
     - request.form
@@ -314,11 +325,11 @@ python:
     - request.cookies
     xxe:
     - .args.get(
-    - .data
+    - request.data
     - .form.get(
-    - .get_data(
+    - request.get_data(
     - .json.get(
-    - .payload
+    - request.payload
     - .read(
     - .stream.read(
     - Body(
@@ -336,14 +347,15 @@ python:
     - .args.get(
     - .args[
     - .cookies.get(
-    - .data
+    - request.data
     - .form.get(
     - .form[
-    - .get_json(
-    - .headers.get(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
     - .json.get(
     - .match_info.get(
-    - .payload
+    - request.payload
     - .query_params.get(
     - .values.get(
     - Body(
@@ -367,13 +379,14 @@ python:
     - .args[
     - .cookies.get(
     - .cookies[
-    - .data
+    - request.data
     - .form.get(
     - .form[
-    - .get_data(
-    - .get_json(
-    - .headers.get(
-    - .headers[
+    - request.get_data(
+    - request.get_json(
+    - req.get_json(
+    - request.headers.get(
+    - request.headers[
     - .json.get(
     - .json[
     - .json_data.get(
@@ -422,7 +435,6 @@ python:
     - .fetchval(
     - .filter(
     - .filter(**
-    - .join(
     - .order_by(
     - .prefetch_related(
     - .query(
@@ -594,7 +606,6 @@ python:
     - mistune.markdown(
     - pyramid.renderers.render(
     - pyramid.renderers.render_to_response(
-    - render(
     - render_template(
     - render_template_string(
     - reportlab.platypus.Paragraph(
@@ -861,7 +872,6 @@ python:
     - starlette.responses.RedirectResponse(
     - tornado.web.RequestHandler.redirect(
     - tornado.web.redirect(
-    - url_for(
     - web.HTTPFound(
     - web.HTTPMultipleChoices(
     - web.HTTPSeeOther(
