@@ -3568,23 +3568,18 @@ java:
     - (String $A)
     - (java.sql.PreparedStatement $STMT) = ...;
     - String.format($VAR, ...)
-    # BUG 42 (误报面 K 类联动): ``String(`` 是 CodeQL 模板被压平的裸类型名，
-    # 任意含 ``String(`` 的调用（连 ``new String(bytes)``）都会被误标成
-    # sql_injection（demo ③ download 的 FP）。真正的 SQL sink 是执行类 API
-    # （executeQuery/createQuery/rawQuery 等，上文保留），``String(`` 只贡献
-    # 误报、无召回价值，故移除。其余裸类型名（Query( / ResultSet( / Cursor( /
-    # SQLiteStatement( 等）虽同样偏宽，但存在「靠声明点标签兜底」的潜在召回
-    # 场景，按「解决误报的前提是不增加漏报」铁律保留，仅对已实证的 FP 动手。
-    - PreparedQuery(
-    - Cursor(
+    # A 类收窄 (误报面 A; BUG 42 的先例)：``String(`` 裸类型名被误标成
+    # sql_injection 的 FP 已被 BUG 42 移除。此处其余裸类型名（PreparedQuery( /
+    # Cursor( / List( / Query( / SqlRowSet( / ResultSet( / TypedQuery( / Object(）
+    # 经 perf_probes/a_pattern_audit.py 在 ureport2 上实证 100% 噪声——命中文本
+    # 全是类型实例化 / 强转 / 声明 / 方法名子串（getDataList( / new Object( 等），
+    # 真实 SQL sink（executeQuery / createQuery / queryForList / rawQuery 等）
+    # 已由上文精确模式覆盖，声明点兜底场景在这些模式上零召回价值；OWASP
+    # Benchmark testcode 亦无任何 TP 依赖（.getPath(/ResultSet(/Query< 等 grep 为零）。
+    # 按新铁律「能证明是误报就直接砍」删除。其余裸类型名（PreparedStatement( /
+    # Vector( / SQLiteStatement( 等）未经同类实证审计，按「未证明不动」保留。
     - PreparedStatementCreator(
     - BatchSql(
-    - List(
-    - Query(
-    - SqlRowSet(
-    - ResultSet(
-    - TypedQuery(
-    - Object(
     - Vector(
     - PreparedStatement(
     - ScalaAnorm(
@@ -3682,7 +3677,8 @@ java:
     - PrintWriter(
     - Result(
     - jsp.JspWriter.print(
-    - Html(
+    # A 类收窄：``Html(`` 裸类型名只命中 ``escapeHtml(`` 等消毒器调用
+    # （audit 40 命中全噪声）——把转义后的输出误标成 XSS sink，纯 FP。
     - jsp.JspWriter.write(
     - io.PrintWriter.println(
     - io.PrintWriter.print(
@@ -3766,7 +3762,10 @@ java:
     - (java.io.File $FILE) =
     - BufferedSource(
     - File(
-    - Path(
+    # A 类收窄：``Path(`` 裸类型名只命中 .getPath( / getContextPath( / toPath( /
+    # setPath( 等方法名子串（audit 53 命中全噪声；OWASP testcode 只命中
+    # setPath(Cookie) 与 XPath 声明）。真 path sink 已由 Paths.get( / Path.resolve( /
+    # .getCanonicalPath( / File.toPath( 等精确模式覆盖。
     ssrf:
     - new URL(
     - URL.openConnection(
@@ -3963,7 +3962,9 @@ java:
     - Field.setAccessible(
     - Class.forName(
     - .getMethod(
-    - Object(
+    # A 类收窄：``Object(`` 裸类型名（audit 66 命中全噪声，命中文本无一是
+    # 真实 code injection sink——真 sink 已由 ScriptEngine.eval( / parseExpression(
+    # 等精确模式覆盖）。
     auth_bypass:
     - SecurityContext.getAuthentication(
     - SecurityContextHolder.getContext(
@@ -4094,9 +4095,10 @@ java:
     - Rythm.render(
     - Jade4J.render(
     - JspServlet
-    - MethodExpression(
-    - ValueExpression(
-    - Expression(
+    # A 类收窄：``MethodExpression(`` / ``ValueExpression(`` / ``Expression(``
+    # 裸类型名（audit 中 Expression( 300 命中全噪声，报告引擎的模板渲染调用；
+    # 真 SSTI sink 已由 Template.process( / TemplateEngine.process( /
+    # Velocity.evaluate( 等精确模式覆盖）。EL 求值有 ELProcessor.eval( 独立覆盖。
     crypto_weakness:
     - MessageDigest.getInstance("MD5"
     - MessageDigest.getInstance("MD4"
