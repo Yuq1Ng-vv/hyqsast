@@ -7,29 +7,46 @@ python:
   - 'jwt\.decode\(.*verify\s*=\s*True'
   sources:
     sql_injection:
-    - .FILES.get(
-    - .FILES[
-    - .args.get(
-    - .args[
-    - .cookies.get(
-    - .cookies[
+    - request.FILES.get(
+    - req.FILES.get(
+    - request.FILES[
+    - req.FILES[
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
+    - request.cookies.get(
+    - req.cookies.get(
+    - request.cookies[
+    - req.cookies[
     - request.data
-    - .form.get(
-    - .form[
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_data(
     - request.get_json(
     - req.get_json(
     - request.headers.get(
     - request.headers[
-    - .json.get(
-    - .json[
-    - .json_data.get(
-    - .json_data[
-    - .match_info.get(
-    - .match_info[
-    - .query_params.get(
-    - .query_params[
-    - .values.get(
+    - request.json.get(
+    - req.json.get(
+    - request.json[
+    - req.json[
+    - request.json_data.get(
+    - req.json_data.get(
+    - request.json_data[
+    - req.json_data[
+    - request.match_info.get(
+    - req.match_info.get(
+    - request.match_info[
+    - req.match_info[
+    - request.query_params.get(
+    - req.query_params.get(
+    - request.query_params[
+    - req.query_params[
+    - request.values.get(
+    - req.values.get(
     - Body(
     - File(
     - Form(
@@ -54,21 +71,29 @@ python:
     - request.args
     - request.cookies
     command_injection:
-    - .args.get(
-    - .args[
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
     - request.body
-    - .cookies.get(
+    - request.cookies.get(
+    - req.cookies.get(
     - .filename
     - .filename.get(
-    - .form.get(
-    - .form[
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_json(
     - req.get_json(
     - request.headers.get(
-    - .json.get(
-    - .match_info.get(
+    - request.json.get(
+    - req.json.get(
+    - request.match_info.get(
+    - req.match_info.get(
     - request.payload
-    - .query_params.get(
+    - request.query_params.get(
+    - req.query_params.get(
     - Body(
     - File(
     - Form(
@@ -96,23 +121,33 @@ python:
     - request.args
     - request.cookies
     xss:
-    - .META.get(
-    - .args.get(
-    - .args[
+    - request.META.get(
+    - req.META.get(
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
     - .cleaned_data.get(
-    - .cookies.get(
-    - .form.get(
-    - .form[
+    - request.cookies.get(
+    - req.cookies.get(
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_json(
     - req.get_json(
     - request.headers.get(
     - request.json()
     - req.json()
-    - .json.get(
-    - .match_info.get(
-    - .query_params.get(
+    - request.json.get(
+    - req.json.get(
+    - request.match_info.get(
+    - req.match_info.get(
+    - request.query_params.get(
+    - req.query_params.get(
     - .read(
-    - .values.get(
+    - request.values.get(
+    - req.values.get(
     - Body(
     - File(
     - Form(
@@ -129,23 +164,34 @@ python:
     - request.cookies
     - websocket.receive_text(
     path_traversal:
-    - .FILES.get(
-    - .FILES[
-    - .args.get(
-    - .args[
-    - .cookies.get(
+    - request.FILES.get(
+    - req.FILES.get(
+    - request.FILES[
+    - req.FILES[
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
+    - request.cookies.get(
+    - req.cookies.get(
     - .filename
-    - .form.get(
-    - .form[
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_json(
     - req.get_json(
     - request.headers.get(
-    - .json.get(
+    - request.json.get(
+    - req.json.get(
     - .originalname
     - .part.name
-    - .query_params.get(
-    - .query_params[
-    - .values.get(
+    - request.query_params.get(
+    - req.query_params.get(
+    - request.query_params[
+    - req.query_params[
+    - request.values.get(
+    - req.values.get(
     - Body(
     - File(
     - Form(
@@ -170,24 +216,33 @@ python:
     - request.cookies
     - zipfile.ZipFile.namelist(
     ssrf:
-    - .args.get(
-    - .args[
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
     - .callback_url
-    - .cookies.get(
-    - .form.get(
-    - .form[
+    - request.cookies.get(
+    - req.cookies.get(
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_data(
     - request.get_json(
     - req.get_json(
     - request.headers.get(
-    - .json.get(
-    - .match_info.get(
+    - request.json.get(
+    - req.json.get(
+    - request.match_info.get(
+    - req.match_info.get(
     - .notify_url
-    - .query_params.get(
+    - request.query_params.get(
+    - req.query_params.get(
     - .redirect_uri
     - request.url
     - req.url
-    - .values.get(
+    - request.values.get(
+    - req.values.get(
     - .webhook_url
     - Body(
     - File(
@@ -206,16 +261,20 @@ python:
     - request.args
     - request.cookies
     deserialization:
-    - .args.get(
+    - request.args.get(
+    - req.args.get(
     - request.body
     - .file.read(
     - .filename
-    - .form.get(
+    - request.form.get(
+    - req.form.get(
     - request.get_data(
     - request.get_json(
     - req.get_json(
-    - .get_signed_cookie(
-    - .json.get(
+    - request.get_signed_cookie(
+    - req.get_signed_cookie(
+    - request.json.get(
+    - req.json.get(
     - request.payload
     - .read(
     - .stream.read(
@@ -234,21 +293,29 @@ python:
     - request.args
     - request.cookies
     open_redirect:
-    - .META.get(
-    - .args.get(
-    - .args[
+    - request.META.get(
+    - req.META.get(
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
     - .continue
-    - .form.get(
-    - .form[
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_json(
     - req.get_json(
     - request.headers.get(
-    - .json.get(
+    - request.json.get(
+    - req.json.get(
     - .next_url
-    - .query_params.get(
+    - request.query_params.get(
+    - req.query_params.get(
     - .redirect_uri
     - .return_to
-    - .values.get(
+    - request.values.get(
+    - req.values.get(
     - Form(
     - Origin
     - Query(
@@ -267,17 +334,25 @@ python:
     - request.cookies
     - sys.argv
     code_injection:
-    - .args.get(
-    - .args[
-    - .cookies.get(
-    - .form.get(
-    - .form[
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
+    - request.cookies.get(
+    - req.cookies.get(
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_json(
     - req.get_json(
     - request.headers.get(
-    - .json.get(
-    - .query_params.get(
-    - .values.get(
+    - request.json.get(
+    - req.json.get(
+    - request.query_params.get(
+    - req.query_params.get(
+    - request.values.get(
+    - req.values.get(
     - Body(
     - Form(
     - Query(
@@ -300,11 +375,15 @@ python:
     - request.cookies
     auth_bypass:
     - .access_token
-    - .args.get(
-    - .cookies.get(
-    - .form.get(
+    - request.args.get(
+    - req.args.get(
+    - request.cookies.get(
+    - req.cookies.get(
+    - request.form.get(
+    - req.form.get(
     - request.headers.get(
-    - .json.get(
+    - request.json.get(
+    - req.json.get(
     - request.headers.get('Authorization'
     - request.headers['Authorization'
     - 'Bearer '
@@ -324,11 +403,14 @@ python:
     - request.args
     - request.cookies
     xxe:
-    - .args.get(
+    - request.args.get(
+    - req.args.get(
     - request.data
-    - .form.get(
+    - request.form.get(
+    - req.form.get(
     - request.get_data(
-    - .json.get(
+    - request.json.get(
+    - req.json.get(
     - request.payload
     - .read(
     - .stream.read(
@@ -344,20 +426,29 @@ python:
     - request.cookies
     - request.data
     ssti:
-    - .args.get(
-    - .args[
-    - .cookies.get(
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
+    - request.cookies.get(
+    - req.cookies.get(
     - request.data
-    - .form.get(
-    - .form[
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_json(
     - req.get_json(
     - request.headers.get(
-    - .json.get(
-    - .match_info.get(
+    - request.json.get(
+    - req.json.get(
+    - request.match_info.get(
+    - req.match_info.get(
     - request.payload
-    - .query_params.get(
-    - .values.get(
+    - request.query_params.get(
+    - req.query_params.get(
+    - request.values.get(
+    - req.values.get(
     - Body(
     - File(
     - Form(
@@ -373,29 +464,46 @@ python:
     xpath_injection:
     cleartext_transmission:
     nosql_injection:
-    - .FILES.get(
-    - .FILES[
-    - .args.get(
-    - .args[
-    - .cookies.get(
-    - .cookies[
+    - request.FILES.get(
+    - req.FILES.get(
+    - request.FILES[
+    - req.FILES[
+    - request.args.get(
+    - req.args.get(
+    - request.args[
+    - req.args[
+    - request.cookies.get(
+    - req.cookies.get(
+    - request.cookies[
+    - req.cookies[
     - request.data
-    - .form.get(
-    - .form[
+    - request.form.get(
+    - req.form.get(
+    - request.form[
+    - req.form[
     - request.get_data(
     - request.get_json(
     - req.get_json(
     - request.headers.get(
     - request.headers[
-    - .json.get(
-    - .json[
-    - .json_data.get(
-    - .json_data[
-    - .match_info.get(
-    - .match_info[
-    - .query_params.get(
-    - .query_params[
-    - .values.get(
+    - request.json.get(
+    - req.json.get(
+    - request.json[
+    - req.json[
+    - request.json_data.get(
+    - req.json_data.get(
+    - request.json_data[
+    - req.json_data[
+    - request.match_info.get(
+    - req.match_info.get(
+    - request.match_info[
+    - req.match_info[
+    - request.query_params.get(
+    - req.query_params.get(
+    - request.query_params[
+    - req.query_params[
+    - request.values.get(
+    - req.values.get(
     - Body(
     - File(
     - Form(
