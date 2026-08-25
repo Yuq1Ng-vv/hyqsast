@@ -46,24 +46,12 @@ python:
     - tomllib.load(
     - websocket.receive_json(
     - websocket.receive_text(
-    - 'from pyramid.view import view_config
-
-      ...
-
-      @view_config( ... )
-
-      def $VIEW($REQ):'
-    - '@$APP.route(...)
-
-      def $FUNC(..., $ROUTEVAR, ...):'
-    - 'def $HANDLER(event, context):'
     - request.json
     - request.files
     - request.form
     - request.values
     - request.args
     - request.cookies
-    - f"..."
     command_injection:
     - .args.get(
     - .args[
@@ -93,49 +81,18 @@ python:
     - websocket.receive_json(
     - websocket.receive_text(
     - werkzeug.datastructures.FileStorage
-    - '" ".join($LIST)'
     - os.environ
-    - 'def $FUNC(request, ...):'
-    - '@$APP.route(...)
-
-      def $FUNC(..., $ROUTEVAR, ...):'
     - self.path
-    - 'class $VIEW(..., rest_framework.generics.GenericAPIView, ...):'
     - self.rfile
-    - '@rest_framework.decorators.api_view(...)
-
-      def $FUNC($REQ, ...):'
-    - 'class $SERVER(..., http.server.BaseHTTPRequestHandler, ...):'
-    - 'for $O, $A in $OPTS:'
-    - self.headers[...]
-    - 'class $SERVER(..., http.server.StreamRequestHandler, ...):'
-    - os.environb['$ANYTHING']
-    - sys.orig_argv[...]
     - os.environb
     - self.requestline
     - sys.orig_argv
-    - 'class $VIEW(..., rest_framework.views.APIView, ...):'
-    - os.environ['$ANYTHING']
-    - <... $ARGS ...>
-    - 'def $FUNC(..., $REQUEST, ...):'
-    - '@pyramid.view.view_config( ... )
-
-      def $VIEW($REQ):'
-    - os.getenv('$ANYTHING', ...)
-    - '@$APP.route($ROUTE, ...)
-
-      def $FUNC(..., $ROUTEVAR, ...):'
-    - 'class $SERVER(..., http.server.DatagramRequestHandler, ...):'
-    - sys.argv[...]
-    - 'def $HANDLER(event, context):'
     - request.json
     - request.files
     - request.form
     - request.values
     - request.args
     - request.cookies
-    - os.getenvb('$ANYTHING', ...)
-    - 'def $METHOD(self, $REQ, ...):'
     xss:
     - .META.get(
     - .args.get(
@@ -167,16 +124,6 @@ python:
     - request.args
     - request.cookies
     - websocket.receive_text(
-    - '@pyramid.view.view_config( ... )
-
-      def $VIEW($REQ):'
-    - '@$APP.route(...)
-
-      def $FUNC(..., $ROUTEVAR, ...):'
-    - 'def $HANDLER(event, context):'
-    - '@$APP.route(...)
-
-      def $FUNC(..., $PARAM, ...):'
     path_traversal:
     - .FILES.get(
     - .FILES[
@@ -252,9 +199,6 @@ python:
     - request.values
     - request.args
     - request.cookies
-    - '@$APP.route(...)
-
-      def $FUNC(..., $ROUTEVAR, ...):'
     deserialization:
     - .args.get(
     - .body
@@ -282,8 +226,6 @@ python:
     - request.values
     - request.args
     - request.cookies
-    - 'def $HANDLER(event, context):'
-    - 'def $INSIDE(..., $PARAM, ...):'
     open_redirect:
     - .META.get(
     - .args.get(
@@ -339,36 +281,14 @@ python:
     - self.requestline
     - os.environ
     - sys.orig_argv
-    - 'class $VIEW(..., rest_framework.views.APIView, ...):'
-    - 'def $FUNC(request, ...):'
-    - '@$APP.route(...)
-
-      def $FUNC(..., $ROUTEVAR, ...):'
-    - <... $ARGS ...>
     - self.path
-    - 'class $VIEW(..., rest_framework.generics.GenericAPIView, ...):'
-    - '@pyramid.view.view_config( ... )
-
-      def $VIEW($REQ):'
     - self.rfile
-    - os.getenv('$ANYTHING', ...)
-    - '@rest_framework.decorators.api_view(...)
-
-      def $FUNC($REQ, ...):'
-    - 'class $SERVER(..., http.server.DatagramRequestHandler, ...):'
-    - 'class $SERVER(..., http.server.BaseHTTPRequestHandler, ...):'
-    - 'for $O, $A in $OPTS:'
-    - 'def $HANDLER(event, context):'
-    - self.headers[...]
-    - 'class $SERVER(..., http.server.StreamRequestHandler, ...):'
     - request.json
     - request.files
     - request.form
     - request.values
     - request.args
     - request.cookies
-    - os.getenvb('$ANYTHING', ...)
-    - 'def $METHOD(self, $REQ, ...):'
     auth_bypass:
     - .access_token
     - .args.get(
@@ -439,12 +359,7 @@ python:
     - request.data.get(
     crypto_weakness:
     xpath_injection:
-    - '"..." %'
-    - 'def $F(..., $ARG, ...):'
-    - f"..."
-    - '"...".format(...)'
     cleartext_transmission:
-    - '"$URL"'
     nosql_injection:
     - .FILES.get(
     - .FILES[
@@ -485,24 +400,12 @@ python:
     - tomllib.load(
     - websocket.receive_json(
     - websocket.receive_text(
-    - 'from pyramid.view import view_config
-
-      ...
-
-      @view_config( ... )
-
-      def $VIEW($REQ):'
-    - '@$APP.route(...)
-
-      def $FUNC(..., $ROUTEVAR, ...):'
-    - 'def $HANDLER(event, context):'
     - request.json
     - request.files
     - request.form
     - request.values
     - request.args
     - request.cookies
-    - f"..."
   sinks:
     sql_injection:
     - .aggregate(
@@ -578,18 +481,13 @@ python:
     - sqlite3.Connection.execute(
     - sqlite3.connect(
     - text(
-    - f"$SQLSTR{...}..."
     - import sqlalchemy
-    - '"$SQLSTR" +'
     - import mysql
     - import mysql.cursors
     - import pymysql
     - import pymysql.cursors
-    - '"$SQLSTR".format(...)'
     - import pymssql
-    - sqlalchemy.text(...)
     - import psycopg2
-    - '"$SQLSTR" %'
     command_injection:
     - .exec_run(
     - .shell = True
@@ -647,63 +545,6 @@ python:
     - subprocess.getoutput(
     - subprocess.getstatusoutput(
     - subprocess.run(
-    - os.$METHOD($BASH,[$PATH,"-c",$CMD,...],...)
-    - os.$METHOD("...", ...)
-    - subprocess.$FUNC(("=~/(python)/","...",...),...)
-    - os.system(...)
-    - subprocess.Popen($ARGS, ...)
-    - subprocess.$FUNC(["...",...], ...)
-    - subprocess.$FUNC(("=~/(sh|bash|ksh|csh|tcsh|zsh)/","-c", $CMD), ...)
-    - os.popen2($CMD,...)
-    - subprocess.$FUNC($CMD, ...)
-    - subprocess.$FUNC("...", ...)
-    - subprocess.$FUNC(...)
-    - subprocess.$FUNC(("=~/(sh|bash|ksh|csh|tcsh|zsh)/","-c","...",...),...)
-    - subprocess.$FUNC(["$SHELL", "-c", ...], ...)
-    - os.popen3($CMD,...)
-    - getattr(__import__("os"), "system")(...)
-    - subprocess.check_call($ARGS, ...)
-    - os.$METHOD($MODE, $BASH, "-c", $CMD,...)
-    - os.$METHOD("...", $PATH, "...", "...",...)
-    - subprocess.$FUNC(["=~/(sh|bash|ksh|csh|tcsh|zsh)/","-c", $CMD], ...)
-    - asyncio.create_subprocess_shell($CMD, ...)
-    - os.system($CMD,...)
-    - os.popen(...)
-    - os.popen2(...)
-    - subprocess.$FUNC(("=~/(python)/", $CMD),...)
-    - os.$METHOD("...", [$PATH,"...","...",...],...)
-    - subprocess.$FUNC("=~/(sh|bash|ksh|csh|tcsh|zsh)/","-c","...",...)
-    - __import__("os").system(...)
-    - os.popen4(...)
-    - subprocess.$FUNC(["=~/(python)/","...",...],...)
-    - asyncio.subprocess.create_subprocess_shell("...", ...)
-    - os.$METHOD($MODE, $BASH, ["-c", $CMD,...],...)
-    - os.$METHOD($MODE, $CMD, ...)
-    - os.$METHOD($MODE, "...", ...)
-    - subprocess.$FUNC("=~/(sh|bash|ksh|csh|tcsh|zsh)/","-c", $CMD)
-    - os.$METHOD($MODE, "...", ["...","...",...], ...)
-    - subprocess.$FUNC(("...",...), ...)
-    - os.$METHOD($MODE, $BASH, ["-c",$CMD,...],...)
-    - os.$METHOD($MODE, "...", "...", "...", ...)
-    - subprocess.$FUNC("=~/(python)/", $CMD)
-    - subprocess.call($ARGS, ...)
-    - os.$METHOD(...)
-    - subprocess.$FUNC(["$INTERPRETER", ...], ...)
-    - subprocess.$FUNC(..., shell=True, ...)
-    - subprocess.SubprocessError(...)
-    - os.$W("...", ...)
-    - subprocess.$FUNC(["=~/(python)/", $CMD],...)
-    - subprocess.$FUNC(["...", ...], ...)
-    - subprocess.CalledProcessError(...)
-    - os.$METHOD($BASH, $PATH, "-c", $CMD,...)
-    - asyncio.subprocess.create_subprocess_shell($CMD, ...)
-    - os.popen3(...)
-    - asyncio.create_subprocess_shell("...", ...)
-    - subprocess.$FUNC(["=~/(sh|bash|ksh|csh|tcsh|zsh)/","-c","...",...],...)
-    - os.popen($CMD,...)
-    - subprocess.$FUNC("=~/(python)/","...",...)
-    - os.popen4($CMD,...)
-    - getattr(os, "system")(...)
     xss:
     - EmailMessage(
     - FileResponse(
@@ -773,17 +614,6 @@ python:
     - xhtml2pdf.pisa.CreatePDF(
     - xml.etree.ElementTree.tostring(
     - xmltodict.unparse(
-    - return "..." +
-    - return ... + "..."
-    - f"$HTMLSTR{...}..."
-    - return $X
-    - return "...".format(...)
-    - '"$HTMLSTR".format(...)'
-    - '"$HTMLSTR" +'
-    - return "..." %
-    - return f"...{...}..."
-    - '"$HTMLSTR" %'
-    - '{..., "headers": {..., "Content-Type": "text/html", ...}, "body": $BODY, ... }'
     path_traversal:
     - FileResponse(
     - StreamingResponse(
@@ -935,10 +765,6 @@ python:
     - websocket.create_connection(
     - websockets.connect(
     - xml.etree.ElementTree.parse(
-    - '"$URLSTR" +'
-    - '"$URLSTR".format(...)'
-    - f"$URLSTR{...}..."
-    - '"$URLSTR" %'
     deserialization:
     - ConfigParser.read(
     - _pickle.load(
@@ -1012,25 +838,6 @@ python:
     - yaml.scan(
     - yaml.unsafe_load(
     - yaml.unsafe_load_all(
-    - yaml.$YAMLFUNC(..., Dumper=yaml.SafeDumper, ...)
-    - pickle.loads($SINK,...)
-    - yaml.$YAMLFUNC(..., Loader=yaml.SafeLoader, ...)
-    - dill.load($SINK,...)
-    - dill.loads($SINK,...)
-    - yaml.$YAMLFUNC(..., Dumper=SafeDumper, ...)
-    - pickle.$PICKLEFUNC(...)
-    - _pickle.$PICKLEFUNC(...)
-    - _pickle.loads($SINK,...)
-    - shelve.open($SINK,...)
-    - yaml.$YAMLFUNC(..., Loader=SafeLoader, ...)
-    - pickle.load($SINK,...)
-    - _pickle.load($SINK,...)
-    - shelve.$PICKLEFUNC(...)
-    - yaml.$YAMLFUNC(...)
-    - cPickle.load($SINK,...)
-    - cPickle.$PICKLEFUNC(...)
-    - dill.$DILLFUNC(...)
-    - cPickle.loads($SINK,...)
     open_redirect:
     - HttpResponsePermanentRedirect(
     - HttpResponseRedirect(
@@ -1088,12 +895,6 @@ python:
     - types.FunctionType(
     - types.ModuleType(
     - types.new_class(
-    - test.support.run_in_subinterp($PAYLOAD, ...)
-    - _xxsubinterpreters.run_string($ID, $PAYLOAD, ...)
-    - _testcapi.run_in_subinterp("...", ...)
-    - test.support.run_in_subinterp("...", ...)
-    - _testcapi.run_in_subinterp($PAYLOAD, ...)
-    - _xxsubinterpreters.run_string($ID, "...", ...)
     auth_bypass:
     - .check_api_key(
     - '@login_required'
@@ -1247,17 +1048,7 @@ python:
     - ssl.PROTOCOL_TLSv
     - ssl.PROTOCOL_TLSv1
     nosql_injection:
-    - '"$SQLSTR" %'
-    - f"$SQLSTR{...}..."
-    - '"$SQLSTR".format(...)'
-    - '"$SQLSTR" +'
     cleartext_transmission:
-    - requests.Request($METHOD, $SINK, ...)
-    - requests.Session(...).request($METHOD, $SINK, ...)
-    - requests.request($METHOD, $SINK, ...)
-    - 'with requests.Session(...) as $SESSION:'
-    - requests.Session(...).$W($SINK, ...)
-    - requests.$W($SINK, ...)
     xpath_injection:
     - .xpath(
     - XPath(
@@ -1477,25 +1268,6 @@ javascript:
     - window.location.search
     - yargs.argv
     - cookies
-    - function ... (..., $Y,...) {...}
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - function ... (...,$REQ, ...) {...}
-    - files.$ANYTHING.data.toString('utf8')
-    - "function ... (...,$FUNC,...) {\n  ...\n}"
-    - 'function $FUNC ($EVENT, ...) {...}
-
-      ...
-
-      exports.handler = $FUNC'
-    - '({ $REQ }: Request,$RES: Response) => {...}'
-    - "exports.handler = function ($EVENT, ...) {\n  ...\n}"
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
-    - function ... ($REQ, $RES) {...}
-    - '(...,{ $REQ }: $EXPRESS.Request,...) => {...}'
-    - '(...,{ $REQ }: Request,...) => {...}'
-    - files.$ANYTHING['data'].toString('utf8')
     - headers
     command_injection:
     - '@Body('
@@ -1518,14 +1290,6 @@ javascript:
     - searchParams
     - yaml.load(
     - yargs.argv
-    - 'function $FUNC ($EVENT, ...) {...}
-
-      ...
-
-      exports.handler = $FUNC'
-    - function ... (..., $ARG,...) {...}
-    - "function ... (...,$FUNC,...) {\n  ...\n}"
-    - "exports.handler = function ($EVENT, ...) {\n  ...\n}"
     xss:
     - .files.item(
     - .files[
@@ -1568,27 +1332,9 @@ javascript:
     - worker.port.onmessage
     - ws.onmessage
     - cookies
-    - function(..., $SCOPE, ...) { ... }
-    - 'function $FUNC ($EVENT, ...) {...}
-
-      ...
-
-      exports.handler = $FUNC'
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
     - window.document.location.search
     - document.location.search
-    - function ... ($REQ, $RES) {...}
-    - 'app.controller(..., function($scope,$sce) {
-
-      ...
-
-      });'
     - headers
-    - '({ $REQ }: Request,$RES: Response) => {...}'
-    - "exports.handler = function ($EVENT, ...) {\n  ...\n}"
     path_traversal:
     - .originalname
     - '@Body('
@@ -1614,17 +1360,7 @@ javascript:
     - url.pathname
     - workerData
     - cookies
-    - function ... (...,{...,$X,...},...) {...}
-    - function ... (..., $ARG,...) {...}
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
-    - 'function ... (...,$REQ: $TYPE, ...) {...}'
-    - function ... ($REQ, $RES) {...}
-    - '({ $REQ }: Request,$RES: Response) => {...}'
     - headers
-    - function ... (...,$X,...) {...}
     ssrf:
     - .endpoint
     - .host
@@ -1653,19 +1389,7 @@ javascript:
     - webhookUrl
     - xml.
     - cookies
-    - '({ $REQ }: Request,...) =>
-
-      {...}'
-    - function ... (..., $ARG,...) {...}
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
-    - '({ $REQ }: $EXPRESS.Request,...) => {...}'
-    - function ... ($REQ, $RES) {...}
-    - '({ $REQ }: Request,$RES: Response) => {...}'
     - headers
-    - function ... ($REQ, ...) {...}
     deserialization:
     - .deserialize(
     - .deserializeBinary(
@@ -1683,14 +1407,6 @@ javascript:
     - req.rawBody
     - req.signedCookies
     - cookies
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
-    - function ... ($REQ, $RES) {...}
-    - files.$ANYTHING.data.toString('utf8')
-    - files.$ANYTHING['data'].toString('utf8')
-    - '({ $REQ }: Request,$RES: Response) => {...}'
     - headers
     open_redirect:
     - '@Param('
@@ -1709,15 +1425,6 @@ javascript:
     - searchParams
     - state
     - cookies
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
-    - JSON.parse("...",...)
-    - function ... (..., $PROP, ...) { ... }
-    - function ... ($REQ, $RES) {...}
-    - JSON.parse(...)
-    - '({ $REQ }: Request,$RES: Response) => {...}'
     - headers
     code_injection:
     - '@Body('
@@ -1736,27 +1443,9 @@ javascript:
     - socket.handshake.
     - yargs.
     - cookies
-    - let { ...,$PROPS,... } = $ROUTER.query
-    - function ... (..., $ARG,...) {...}
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - var { ...,$PROPS,... } = $ROUTER.query
-    - 'function $FUNC ($EVENT, ...) {...}
-
-      ...
-
-      exports.handler = $FUNC'
-    - '({ $REQ }: Request,$RES: Response) => {...}'
-    - import $IMPORT from 'next/router';
-    - "exports.handler = function ($EVENT, ...) {\n  ...\n}"
-    - const { ...,$PROPS,... } = $ROUTER.query
     - location.href
     - location.hash
     - location.search
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
-    - function ... ($REQ, $RES) {...}
-    - import { ...,$IMPORT,... } from 'next/router'
     - headers
     auth_bypass:
     - '@Headers('
@@ -1802,15 +1491,6 @@ javascript:
     - request.body
     - uploadContent
     - cookies
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
-    - function ... ($REQ, $RES) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) => {...}'
-    - files.$ANYTHING.data.toString('utf8')
-    - files.$ANYTHING['data'].toString('utf8')
-    - '({ $REQ }: Request,$RES: Response) => {...}'
     - headers
     ssti:
     - .input
@@ -1829,50 +1509,16 @@ javascript:
     - req.params
     - req.query
     - searchParams
-    - function ... ($REQ, $RES) {...}
     - headers
     - cookies
-    - '({ $REQ }: Request,$RES: Response) => {...}'
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
     crypto_weakness:
-    - '{type: ...}'
     nosql_injection:
-    - function ... ($REQ, $RES) {...}
     - headers
     - cookies
-    - "function ... (...,$FUNC,...) {\n  ...\n}"
-    - '({ $REQ }: Request,$RES: Response) => {...}'
-    - function ... ($REQ, $RES, $NEXT) {...}
-    - '({ $REQ }: Request,$RES: Response, $NEXT: NextFunction) =>
-
-      {...}'
     format_string:
-    - '"..." + "..."'
-    - '`...${...}...`'
     hardcoded_secret:
-    - '{..., clientSecret: "...", ...}'
-    - '{..., consumerSecret: "...", ...}'
-    - '{..., consumerSecret: $SECRET, ...}'
-    - '{..., secretOrKey: $SECRET, ...}'
-    - '{..., secretOrKey: "...", ...}'
-    - '{..., clientSecret: $SECRET, ...}'
   sinks:
     sql_injection:
-    - $executeRaw(
-    - $executeRawUnsafe(
-    - $queryRaw(
-    - $queryRawUnsafe(
-    - $runCommandRaw(
-    - .$executeRaw`
-    - .$gt
-    - .$lt
-    - .$ne
-    - .$queryRaw`
-    - .$regex
-    - .$where
     - .createQueryBuilder(
     - .elemMatch(
     - .equals(
@@ -1958,7 +1604,6 @@ javascript:
     - knex.schema.raw(
     - knex.select(
     - knex.whereRaw(
-    - mongoose.Model.$where(
     - mongoose.Model.aggregate(
     - mongoose.Model.countDocuments(
     - mongoose.Model.deleteMany(
@@ -1986,11 +1631,6 @@ javascript:
     - pg.Pool.query(
     - pool.query(
     - postgraphile.
-    - prisma.$executeRaw(
-    - prisma.$executeRawUnsafe(
-    - prisma.$queryRaw(
-    - prisma.$queryRawUnsafe(
-    - prisma.$runCommandRaw(
     - redis.createClient(
     - sequelize.query(
     - slonik.sql.raw(
@@ -2005,36 +1645,23 @@ javascript:
     - sqlite3.Database.run(
     - import 'knex'
     - import 'mysql2'
-    - '"$SQLSTR".concat($EXPR)'
-    - require("$IMPORT")
-    - '`$SQLSTR${$EXPR}...`'
     - require('knex')
-    - '"$SQLSTR" + $EXPR'
     - require('pg')
-    - import $S from "$IMPORT"
     - update
     - import 'mysql2/promise'
     - require('mysql2/promise')
-    - util.format($SQLSTR, ...)
     - insert
-    - import { ... } from "$IMPORT"
     - import 'mssql';
     - require('mysql')
     - require('sequelize')
-    - '`...${...}...`'
     - create
-    - '"$SQLSTR".concat(...)'
     - delete
     - require('mssql');
-    - util.format($SQLSTR, $EXPR)
-    - sequelize.query($QUERY,...)
     - import 'sequelize'
     - import 'pg'
     - require('mysql2')
     - import 'mysql'
-    - import * as $S from "$IMPORT"
     command_injection:
-    - $`
     - '@aws-sdk/client-'
     - '@google-cloud/'
     - '@kubernetes/client-node'
@@ -2076,8 +1703,6 @@ javascript:
     - node-ssh.execCommand(
     - npm.
     - npx.
-    - page.$$eval(
-    - page.$eval(
     - page.addScriptTag(
     - page.addStyleTag(
     - page.evaluate(
@@ -2111,20 +1736,9 @@ javascript:
     - yarn.
     - zx(
     - zx.which(
-    - execSync($CMD,...)
-    - child_process.spawn($CMD,...)
-    - spawnSync($CMD,...)
     - import 'child_process'
-    - child_process.execSync($CMD,...)
-    - spawn(...)
-    - spawnSync(...)
-    - child_process.spawnSync($CMD,...)
     - require('child_process')
-    - spawn($CMD,...)
-    - import $CP from 'child_process'
-    - import * as $CP from 'child_process'
     xss:
-    - $(
     - .after(
     - .append(
     - .before(
@@ -2240,16 +1854,6 @@ javascript:
     - ws.send(
     - '{@html '
     - '{@html}'
-    - '"$HTMLSTR" + $EXPR'
-    - '{..., headers: {..., ''Content-Type'': ''text/html'', ...}, body: $BODY, ... }'
-    - angular.element(...). ... .$SINK($QUERY)
-    - '"$HTMLSTR".concat(...)'
-    - function ... (..., $RES,...) {...}
-    - '"..." + $STRING'
-    - util.format($HTMLSTR, ...)
-    - '[..., $STRING, ...].join(...)'
-    - format($HTMLSTR, ...)
-    - '`...${...}...`'
     path_traversal:
     - '@aws-sdk/client-s3'
     - '@azure/storage-blob'
@@ -2377,115 +1981,9 @@ javascript:
     - unzipper.Open.url(
     - yauzl.open(
     - yazl.ZipFile(
-    - readlinkSync($FILE, ...)
-    - renameSync($SMTH, $FILE, ...)
-    - lchown($FILE, ...)
-    - renameSync($FILE, ...)
-    - futimes($FILE, ...)
-    - path.resolve(...,$SINK,...)
-    - cp($SMTH, $FILE, ...)
-    - rename($SMTH, $FILE, ...)
-    - closeSync($FILE, ...)
-    - accessSync($FILE, ...)
-    - close($FILE,...)
     - import 'path';
-    - openSync($FILE, ...)
-    - stat($FILE, ...)
-    - access($FILE,...)
-    - utimes($FILE, ...)
-    - cp($FILE, ...)
-    - import $FS from 'fs/promises'
-    - ftruncate($FILE, ...)
-    - realpathSync.native($FILE, ...)
-    - unlinkSync($FILE, ...)
-    - cpSync($SMTH, $FILE, ...)
-    - unlink($FILE, ...)
-    - readFileSync($FILE, ...)
-    - existsSync($FILE, ...)
-    - lstatSync($FILE, ...)
-    - fdatasync($FILE, ...)
-    - createWriteStream($FILE,...)
-    - lutimes($FILE, ...)
-    - lchmod($FILE, ...)
-    - statSync($FILE, ...)
-    - rm($FILE, ...)
-    - rmSync($FILE, ...)
-    - appendFile($FILE,...)
-    - rmdir($FILE, ...)
-    - path.join(...,$SINK,...)
-    - fstat($FILE, ...)
-    - truncate($FILE, ...)
-    - copyFileSync($FILE, ...)
-    - linkSync($SMTH, $FILE, ...)
-    - write($FILE, ...)
-    - readdirSync($FILE, ...)
-    - rmdirSync($FILE, ...)
-    - import * as $FS from 'fs'
-    - appendFileSync($FILE, ...)
-    - symlinkSync($FILE, ...)
-    - copyFile($FILE,...)
-    - symlink($FILE, ...)
-    - fsync($FILE, ...)
-    - mkdtempSync($FILE, ...)
-    - watchFile($FILE, ...)
-    - fsyncSync($FILE, ...)
     - import 'fs'
     - import 'fs/promises'
-    - symlink($SMTH, $FILE, ...)
-    - ftruncateSync($FILE, ...)
-    - writevSync($FILE, ...)
-    - writev($FILE, ...)
-    - symlinkSync($SMTH, $FILE, ...)
-    - import $FS from 'fs'
-    - chown($FILE,...)
-    - read($FILE, ...)
-    - writeSync($FILE, ...)
-    - copyFileSync($SMTH, $FILE, ...)
-    - chownSync($FILE, ...)
-    - fstatSync($FILE, ...)
-    - readSync($FILE, ...)
-    - mkdtemp($FILE, ...)
-    - utimesSync($FILE, ...)
-    - fchownSync($FILE, ...)
-    - opendirSync($FILE, ...)
-    - writeFileSync($FILE, ...)
-    - fchown($FILE, ...)
-    - import $PATH from 'path';
-    - cpSync($FILE, ...)
-    - linkSync($FILE, ...)
-    - readlink($FILE, ...)
-    - chmodSync($FILE, ...)
-    - link($SMTH, $FILE, ...)
-    - createReadStream($FILE,...)
-    - unwatchFile($FILE, ...)
-    - open($FILE, ...)
-    - exists($FILE, ...)
-    - fdatasyncSync($FILE, ...)
-    - writeFile($FILE, ...)
-    - rename($FILE, ...)
-    - opendir($FILE, ...)
-    - link($FILE, ...)
-    - lchmodSync($FILE, ...)
-    - lstat($FILE, ...)
-    - readv($FILE, ...)
-    - watch($FILE, ...)
-    - readdir($FILE, ...)
-    - realpath($FILE, ...)
-    - chmod($FILE,...)
-    - mkdirSync($FILE, ...)
-    - realpathync($FILE, ...)
-    - lutimesSync($FILE, ...)
-    - lchownSync($FILE, ...)
-    - mkdir($FILE, ...)
-    - realpath.native($FILE, ...)
-    - fchmodSync($FILE, ...)
-    - truncateSync($FILE, ...)
-    - copyFile($SMTH, $FILE,...)
-    - import * as $FS from 'fs/promises'
-    - fchmod($FILE, ...)
-    - readvSync($FILE, ...)
-    - futimesSync($FILE, ...)
-    - readFile($FILE, ...)
     ssrf:
     - '@apollo/client'
     - '@aws-sdk/'
@@ -2653,10 +2151,8 @@ javascript:
     - import 'phantom';
     - import 'chrome-remote-interface';
     - require('phantom');
-    - import * as $REQUEST from 'request'
     - require('chrome-remote-interface');
     - require('puppeteer');
-    - import $REQUEST from 'request'
     deserialization:
     - .deserializeBinary(
     - .set(
@@ -2739,11 +2235,7 @@ javascript:
     - yaml.loadAll(
     - yaml.parse(
     - yaml.parseDocument(
-    - import * as $SER from '$IMPORT'
-    - import $SER from '$IMPORT'
     open_redirect:
-    - $router.push(
-    - $router.replace(
     - '''<meta http-equiv="refresh"'
     - '<Navigate '
     - '<Redirect '
@@ -2778,23 +2270,12 @@ javascript:
     - router.push(
     - router.replace(
     - self.location =
-    - this.$router.push(
     - top.location =
     - useNavigate(
     - window.location =
     - window.location.assign(
     - window.location.href =
     - window.location.replace(
-    - window.location.replace($SINK)
-    - location = $SINK
-    - this.location.replace($SINK)
-    - location.href = $SINK
-    - this.window.location.replace($SINK)
-    - window.location.href = $SINK
-    - this.window.location.href = $SINK
-    - Object.assign(...)
-    - this.location.href = $SINK
-    - location.replace($SINK)
     code_injection:
     - CoffeeScript.compile(
     - CoffeeScript.eval(
@@ -2824,8 +2305,6 @@ javascript:
     - markdownit(
     - new Function(
     - new Worker(
-    - page.$$eval(
-    - page.$eval(
     - page.evaluate(
     - page.evaluateHandle(
     - safe-eval(
@@ -2844,30 +2323,10 @@ javascript:
     - vm2.
     - workerFarm(
     - worker_threads.Worker(
-    - runInThisContext($X,...)
     - require('vm2')
     - import 'bluebird';
-    - new $VM.Script($X,...)
-    - runInContext($X,...)
-    - new Function(<... $SINK ...>)(...)
-    - compileFunction($X,...)
-    - new SourceTextModule($X,...)
-    - new Script($X,...)
-    - new VMScript(...)
     - require('vm');
-    - new Function(<... $SINK ...>)
-    - setInterval(<... $SINK ...>,...)
-    - new VM(...)
-    - runInNewContext($X,...)
-    - new $VM.SourceTextModule($X,...)
-    - Function(...,$CODE)
-    - toFastProperties($SINK,...)
-    - setTimeout(<... $SINK ...>,...)
-    - new NodeVM(...)
-    - new Function(...,$CODE)
     - import 'vm'
-    - require(...)
-    - new $VM.Script(...)
     auth_bypass:
     - '@UseGuards('
     - '@auth0/'
@@ -2986,11 +2445,7 @@ javascript:
     - xmldom.DOMParser.parseFromString(
     - xslt4node.transform(
     - import 'xml2json';
-    - import $XML from '$IMPORT'
-    - import $XML from 'node-expat'
     - require('xml2json');
-    - import * as $XML from '$IMPORT'
-    - import * as $XML from 'node-expat'
     ssti:
     - <%-
     - <%=
@@ -3043,17 +2498,6 @@ javascript:
     - twig.render(
     - twig.twig(
     - underscore.template(
-    - import * as $PUG from 'squirrelly'
-    - import * as $PUG from 'dot'
-    - import * as $PUG from 'nunjucks'
-    - import * as $PUG from 'mustache'
-    - import * as $PUG from 'eta'
-    - import * as $PUG from 'pug'
-    - import * as $PUG from 'jade'
-    - import * as $PUG from 'lodash'
-    - import * as $PUG from 'handlebars'
-    - import * as $PUG from 'ejs'
-    - import * as $PUG from 'hogan.js'
     crypto_weakness:
     - Math.random(
     - 'checkServerIdentity: false'
@@ -3078,19 +2522,8 @@ javascript:
     - tls.createSecureContext(
     - tls.createServer(
     hardcoded_secret:
-    - import $JWT from "jsonwebtoken"
-    - import { $STRAT as $F } from '$I'
-    - import * as $JWT from "jsonwebtoken"
-    - import $F from '$I'
-    - new $F($VALUE,...)
-    - import {...,$JWT,...} from "jsonwebtoken"
     nosql_injection:
-    - let { $CLIENT } = require('pg')
-    - var { $CLIENT } = require('pg')
-    - Object.assign(...)
-    - const { $CLIENT } = require('pg')
     format_string:
-    - console.$LOG($STR,$PARAM,...)
   sanitizers:
     sql_injection:
     - prepared(
@@ -3103,17 +2536,14 @@ javascript:
     - sanitize(
     - sequelize.escape(
     - parseInt(
-    - prisma.$queryRaw`
     - mysql.escape(
     - .escape(
     - parseFloat(
     - validator.isNumeric(
     - sql.join(
-    - prisma.$executeRaw`
     - validator.escape(
     - Model.findByPk(
     - PreparedStatement
-    - knex.raw(.*\$1)
     - Number(
     - knex.raw(.*\?)
     - sql.identifier(
@@ -3260,12 +2690,18 @@ java:
   - 'MessageFormat\s*\.\s*format\s*\([^)]*getString'
   sources:
     command_injection:
-    - .getParameter(
-    - .getParameterValues(
-    - .getHeader(
-    - .getHeaders(
-    - .getPart(
-    - .getSubmittedFileName(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getParameterValues(
+    - req.getParameterValues(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getHeaders(
+    - req.getHeaders(
+    - request.getPart(
+    - req.getPart(
+    - item.getSubmittedFileName(
+    - part.getSubmittedFileName(
     - System.getenv(
     # BUG 45（漏报面：cmdi 37 FN 主因）：System.getProperty( 是 JVM 部署配置、
     # 非逐请求用户输入，作为 command_injection source 会在 sink 调用内部
@@ -3281,27 +2717,29 @@ java:
     - '@FormParam'
     - '@PathParam'
     - '@HeaderParam'
-    - (String $STR).concat($SOURCE)
-    - String.format("...", ..., $SOURCE, ...)
-    - (HttpServletRequest $REQ).getSession()
-    - String.join("...", ..., $SOURCE, ...)
-    - java.net.URLDecoder.decode($PARAM, ...)
-    - "(javax.servlet.http.Cookie[] $COOKIES) = (HttpServletRequest $REQ).getCookies(...);\n...\nfor (javax.servlet.http.Cookie\
-      \ $COOKIE: $COOKIES) {\n  ...\n}"
-    - (HttpServletRequest $REQ).$FUNC(...)
-    - (HttpServletRequest $REQ)
     xss:
-    - .getParameter(
-    - .getParameterValues(
-    - .getParameterMap(
-    - .getQueryString(
-    - .getHeader(
-    - .getHeaders(
-    - .getInputStream(
-    - .getReader(
-    - .getCookies(
-    - .getRequestURI(
-    - .getRequestURL(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getParameterValues(
+    - req.getParameterValues(
+    - request.getParameterMap(
+    - req.getParameterMap(
+    - request.getQueryString(
+    - req.getQueryString(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getHeaders(
+    - req.getHeaders(
+    - request.getInputStream(
+    - item.getInputStream(
+    - request.getReader(
+    - req.getReader(
+    - request.getCookies(
+    - req.getCookies(
+    - request.getRequestURI(
+    - req.getRequestURI(
+    - request.getRequestURL(
+    - req.getRequestURL(
     - '@RequestParam'
     - '@PathVariable'
     - '@RequestBody'
@@ -3314,25 +2752,27 @@ java:
     - '@PathParam'
     - '@HeaderParam'
     - '@CookieParam'
-    - StringBuilder $SB = new StringBuilder("$HTMLSTR");
-    - '"$HTMLSTR" +'
-    - '"$HTMLSTR".concat(...)'
-    - (HttpServletRequest $REQ).$REQFUNC(...)
-    - (ServletRequest $REQ).$REQFUNC(...)
-    - String $VAR = "$HTMLSTR";
-    - String.format("$HTMLSTR", ...)
-    - String.format($VAR, ...)
     path_traversal:
-    - .getParameter(
-    - .getParameterValues(
-    - .getHeader(
-    - .getPathInfo(
-    - .getPathTranslated(
-    - .getServletPath(
-    - .getRequestURI(
-    - .getRealPath(
-    - .getPart(
-    - .getSubmittedFileName(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getParameterValues(
+    - req.getParameterValues(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getPathInfo(
+    - req.getPathInfo(
+    - request.getPathTranslated(
+    - req.getPathTranslated(
+    - request.getServletPath(
+    - req.getServletPath(
+    - request.getRequestURI(
+    - req.getRequestURI(
+    - request.getRealPath(
+    - servletContext.getRealPath(
+    - request.getPart(
+    - req.getPart(
+    - item.getSubmittedFileName(
+    - part.getSubmittedFileName(
     - '@RequestParam'
     - '@PathVariable'
     - '@RequestPart'
@@ -3340,19 +2780,24 @@ java:
     - '@QueryParam'
     - '@FormParam'
     - '@PathParam'
-    - .getOriginalFilename(
+    - file.getOriginalFilename(
+    - multipartFile.getOriginalFilename(
     - CommonsMultipartFile
-    - "(javax.servlet.http.Cookie[] $COOKIES) = (HttpServletRequest $REQ).getCookies(...);\n...\nfor (javax.servlet.http.Cookie\
-      \ $COOKIE: $COOKIES) {\n  ...\n}"
-    - (HttpServletRequest $REQ)
     ssrf:
-    - .getParameter(
-    - .getParameterValues(
-    - .getHeader(
-    - .getQueryString(
-    - .getServerName(
-    - .getRequestURL(
-    - .getRequestURI(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getParameterValues(
+    - req.getParameterValues(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getQueryString(
+    - req.getQueryString(
+    - request.getServerName(
+    - req.getServerName(
+    - request.getRequestURL(
+    - req.getRequestURL(
+    - request.getRequestURI(
+    - req.getRequestURI(
     - '@RequestParam'
     - '@PathVariable'
     - '@RequestHeader'
@@ -3362,12 +2807,18 @@ java:
     - '@PathParam'
     - '@HeaderParam'
     deserialization:
-    - .getInputStream(
-    - .getReader(
-    - .getParameter(
-    - .getHeader(
-    - .getCookies(
-    - .getPart(
+    - request.getInputStream(
+    - item.getInputStream(
+    - request.getReader(
+    - req.getReader(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getCookies(
+    - req.getCookies(
+    - request.getPart(
+    - req.getPart(
     - '@RequestBody'
     - '@RequestPart'
     - '@CookieValue'
@@ -3375,23 +2826,34 @@ java:
     - '@FormParam'
     - ObjectInputStream
     open_redirect:
-    - .getParameter(
-    - .getHeader(
-    - .getQueryString(
-    - .getRequestURL(
-    - .getRequestURI(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getQueryString(
+    - req.getQueryString(
+    - request.getRequestURL(
+    - req.getRequestURL(
+    - request.getRequestURI(
+    - req.getRequestURI(
     - '@RequestParam'
     - '@PathVariable'
     - '@QueryParam'
     - '@FormParam'
     - '@PathParam'
     code_injection:
-    - .getParameter(
-    - .getParameterValues(
-    - .getHeader(
-    - .getInputStream(
-    - .getReader(
-    - .getQueryString(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getParameterValues(
+    - req.getParameterValues(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getInputStream(
+    - item.getInputStream(
+    - request.getReader(
+    - req.getReader(
+    - request.getQueryString(
+    - req.getQueryString(
     - '@RequestParam'
     - '@PathVariable'
     - '@RequestBody'
@@ -3402,37 +2864,45 @@ java:
     - '@PathParam'
     - '@HeaderParam'
     auth_bypass:
-    - .getCookies(
-    - .getHeader("Authorization"
-    - .getSession().getAttribute(
+    - request.getCookies(
+    - req.getCookies(
+    - request.getHeader("Authorization"
+    - req.getHeader("Authorization"
+    - request.getSession().getAttribute(
     - '@RequestHeader'
     - '@CookieValue'
     - '@HeaderParam'
     - '@CookieParam'
     xxe:
-    - .getParameter(
-    - .getInputStream(
-    - .getReader(
-    - .getPart(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getInputStream(
+    - item.getInputStream(
+    - request.getReader(
+    - req.getReader(
+    - request.getPart(
+    - req.getPart(
     - '@RequestBody'
     - '@RequestPart'
     - '@RequestParam'
     - '@FormParam'
-    - "class $C {\n  ...\n  $V $FACTORY = SAXParserFactory.newInstance();\n  ...\n}"
-    - "class $C {\n  ...\n  $V $FACTORY = TransformerFactory.newInstance();\n  ...\n}"
-    - "class $C {\n  ...\n  $V $FACTORY = DocumentBuilderFactory.newInstance();\n  ...\n}"
     jndi_injection:
-    - .getParameter(
-    - .getHeader(
-    - .getCookies(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getCookies(
+    - req.getCookies(
     - '@RequestParam'
     - '@RequestHeader'
     - '@PathVariable'
     - '@CookieValue'
     - '@HeaderParam'
     ssti:
-    - .getParameter(
-    - .getHeader(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getHeader(
+    - req.getHeader(
     - '@RequestParam'
     - '@PathVariable'
     - '@RequestBody'
@@ -3440,19 +2910,26 @@ java:
     - '@QueryParam'
     - '@FormParam'
     xpath_injection:
-    - (HttpServletRequest $REQ).$FUNC(...)
     ldap_injection:
-    - (HttpServletRequest $REQ)
     injection_general:
-    - .getParameter(
-    - .getParameterValues(
-    - .getParameterMap(
-    - .getQueryString(
-    - .getHeader(
-    - .getHeaders(
-    - .getCookies(
-    - .getInputStream(
-    - .getReader(
+    - request.getParameter(
+    - req.getParameter(
+    - request.getParameterValues(
+    - req.getParameterValues(
+    - request.getParameterMap(
+    - req.getParameterMap(
+    - request.getQueryString(
+    - req.getQueryString(
+    - request.getHeader(
+    - req.getHeader(
+    - request.getHeaders(
+    - req.getHeaders(
+    - request.getCookies(
+    - req.getCookies(
+    - request.getInputStream(
+    - item.getInputStream(
+    - request.getReader(
+    - req.getReader(
     - '@RequestParam'
     - '@PathVariable'
     - '@RequestBody'
@@ -3478,10 +2955,6 @@ java:
     - .request().getParam(
     - DataFetchingEnvironment.getArgument(
     - graphql.ExecutionInput
-    - public $T $M (..., String $ARG,...){...}
-    - (HttpServletRequest $REQ).$REQFUNC(...)
-    - (ServletRequest $REQ).$REQFUNC(...)
-    - (HttpServletRequest $REQ)
   sinks:
     sql_injection:
     - .executeQuery(
@@ -3561,7 +3034,6 @@ java:
     - String;I)J(
     - CallableStatement(
     - SqlQueryResult(
-    - SqlConnection(
     - ParcelFileDescriptor(
     command_injection:
     - Runtime.exec(
@@ -3587,17 +3059,6 @@ java:
     - Execute(
     - Commandline
     - ProcessExecutor
-    - (Process $P) = ...;
-    - "(java.util.List<$TYPE> $ARGLIST) = ...;  \n...\n(ProcessBuilder $PB) = ...;"
-    - "(java.util.List<$TYPE> $ARGLIST) = ...;  \n...\n(Process $P) = ...;"
-    - new ProcessBuilder(...). ... .start(...);
-    - "(java.util.List<$TYPE> $ARGLIST) = ...;  \n...\n(ProcessBuilder $PB) = ...;\n...\n$PB.command($ARGLIST);"
-    - (Process $P) = new Process(...);
-    - (ProcessBuilder $PB).command(...);
-    - (ProcessBuilder $PB) = ...;
-    - (HttpServletRequest $REQ).getSession().$FUNC($NAME, $VALUE);
-    - (ProcessBuilder $PB).command(...).$ADD(...);
-    - Process(
     xss:
     - .getWriter(
     - .getOutputStream(
@@ -3628,25 +3089,11 @@ java:
     - MethodExpression.invoke(
     - .write(callback
     - .addHeader(
-    - .setHeader(
     - ResponseEntity
     - ResponseBodyEmitter.send(
-    - ResponseEntity.$RESPFUNC($PAYLOAD).
-    - (javax.servlet.ServletOutputStream $WRITER).$WRITE(...)
-    - (PrintWriter $WRITER).$WRITE(...)
-    - (HttpServletResponse $RESPONSE).getWriter(...).$WRITE(...)
-    - new ResponseEntity<>($PAYLOAD, ...)
-    - (HttpServletResponse $RESPONSE).getOutputStream(...).$WRITE(...)
-    - ResponseEntity. ... .body($PAYLOAD)
-    - (java.io.PrintWriter $WRITER).$WRITE(...)
-    - (OutputStream $WRITER).$WRITE(...)
-    - new ResponseEntity<$ERROR>($PAYLOAD, ...)
-    - (ServletOutputStream $WRITER).$WRITE(...)
-    - (java.io.OutputStream $WRITER).$WRITE(...)
     - tag.ForHtmlTag.doTag(
     - io.PrintWriter.write(
     - PrintWriter(
-    - Result(
     - jsp.JspWriter.print(
     # A 类收窄：``Html(`` 裸类型名只命中 ``escapeHtml(`` 等消毒器调用
     # （audit 40 命中全噪声）——把转义后的输出误标成 XSS sink，纯 FP。
@@ -3716,23 +3163,11 @@ java:
     - FileUtils.writeStringToFile(
     - Scanner(new File(
     - ImageIO.read(new File(
-    - new File(...).text
-    - new File(...).bytes
-    - new FileReader(...)
-    - new File(...)
-    - new FileOutputStream($FILE, ...)
-    - ResourceUtils.getFile($FILE, ...)
-    - new java.io.FileOutputStream($FILE, ...)
-    - new java.io.FileReader(...)
-    - new javax.xml.transform.StreamSource($FILE, ...)
-    - new java.io.File(...)
-    - new ClassPathResource($FILE, ...)
-    - new StreamSource($FILE, ...)
-    - FileUtils.openOutputStream($FILE, ...)
-    - (java.io.FileOutputStream $FOS) =
-    - (java.io.File $FILE) =
     - BufferedSource(
-    - File(
+    - new File(
+    - java.io.File(
+    - FileOutputStream(
+    - FileInputStream(
     # A 类收窄：``Path(`` 裸类型名只命中 .getPath( / getContextPath( / toPath( /
     # setPath( 等方法名子串（audit 53 命中全噪声；OWASP testcode 只命中
     # setPath(Cookie) 与 XPath 声明）。真 path sink 已由 Paths.get( / Path.resolve( /
@@ -3800,14 +3235,6 @@ java:
     - ImageIO.read(new URL(
     - InetAddress.getByName(
     - InetAddress.getAllByName(
-    - String $VAR = "$URLSTR";
-    - String.format("$URLSTR", ...)
-    - new URL($ONEARG)
-    - '"$URLSTR" +'
-    - '"$URLSTR".concat(...)'
-    - StringBuilder $SB = new StringBuilder("$URLSTR");
-    - String.format("$URLSTR", "...", ...)
-    - String.format($VAR, ...)
     deserialization:
     - ObjectInputStream.readObject(
     - ObjectInputStream.readUnshared(
@@ -3980,7 +3407,6 @@ java:
     - DOMBuilder
     - DocumentHelper.parseText(
     - DocumentFactory
-    - .read(
     - DocumentBuilder
     - DocumentBuilderFactory
     - SAXParser
@@ -4136,13 +3562,34 @@ java:
     - .getDeclaredMethod(
     - .loadClass(
     log_injection:
-    - .info(
-    - .debug(
-    - .warn(
-    - .error(
-    - .trace(
-    - .fatal(
-    - .log(
+    - logger.info(
+    - log.info(
+    - LOG.info(
+    - LOGGER.info(
+    - logger.debug(
+    - log.debug(
+    - LOG.debug(
+    - LOGGER.debug(
+    - logger.warn(
+    - log.warn(
+    - LOG.warn(
+    - LOGGER.warn(
+    - logger.error(
+    - log.error(
+    - LOG.error(
+    - LOGGER.error(
+    - logger.trace(
+    - log.trace(
+    - LOG.trace(
+    - LOGGER.trace(
+    - logger.fatal(
+    - log.fatal(
+    - LOG.fatal(
+    - LOGGER.fatal(
+    - logger.log(
+    - log.log(
+    - LOG.log(
+    - LOGGER.log(
     # 信任边界（CWE-501）：未校验的请求数据写入 HttpSession —— 会话被后续
     # 代码当作可信数据使用。精确到 getSession().setAttribute（避开
     # request.setAttribute 之类请求级属性，不制造信任边界误报）与
