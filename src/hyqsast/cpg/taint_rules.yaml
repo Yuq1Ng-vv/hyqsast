@@ -3539,35 +3539,6 @@ java:
     - SQLiteDatabase.rawQuery(
     - SQLiteDatabase.execSQL(
     - SQLExpressions
-    - NamedParameterBatchUpdateUtils.$M($A,...)
-    - (Connection $C).prepareStatement(...).$SQLFUNC(...)
-    - String $VAR = "$SQLSTR";
-    - (String $SQL) = "$SQLSTR" + ...;
-    - '(java.sql.Statement $STMT) = ...;
-
-      ...
-
-      $OUTPUT = $STMT.$FUNC(...);'
-    - (Statement $S).$SQLFUNC(...)
-    - (JdbcTemplate $T).$M($A,...)
-    - BatchUpdateUtils.$M($A,...)
-    - (java.sql.CallableStatement $STMT) = ...;
-    - StringBuilder $SB = new StringBuilder("$SQLSTR");
-    - (Connection $C).createStatement(...).$SQLFUNC(...)
-    - (org.springframework.jdbc.core.JdbcTemplate $TEMPL).batchUpdate(...)
-    - (java.util.Map<String, Object> $STMT) = $PATH.queryForMap(...);
-    - '"$SQLSTR".concat(...)'
-    - '"$SQLSTR" +'
-    - (JdbcTemplate $T).batchUpdate(...)
-    - (java.sql.Statement $STMT) = ...;
-    - (EntityManager $EM).$SQLFUNC(...)
-    - String.format("$SQLSTR", ...)
-    - (PreparedStatement $P).$SQLFUNC(...)
-    - (org.springframework.jdbc.support.rowset.SqlRowSet $STMT) = ...;
-    - new PreparedStatementCreatorFactory($A,...);
-    - (String $A)
-    - (java.sql.PreparedStatement $STMT) = ...;
-    - String.format($VAR, ...)
     # A 类收窄 (误报面 A; BUG 42 的先例)：``String(`` 裸类型名被误标成
     # sql_injection 的 FP 已被 BUG 42 移除。此处其余裸类型名（PreparedQuery( /
     # Cursor( / List( / Query( / SqlRowSet( / ResultSet( / TypedQuery( / Object(）

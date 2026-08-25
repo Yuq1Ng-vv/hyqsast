@@ -473,29 +473,41 @@ class CPGGraphBuilder:
         ).hexdigest()[:16]
         return cache_root / f"{dir_hash}.pkl"
 
-    @staticmethod
-    def _compute_source_fingerprint(directory: Path, progress: object | None = None) -> str:
-        """Compute a fingerprint of all source files under *directory*.
+    def _compute_source_fingerprint(
+        self,
+        directory: Path,
+        progress: object | None = None,
+        files: list[Path] | None = None,
+    ) -> str:
+        """Compute a fingerprint of the source files under *directory*.
 
         用 (相对路径, 内容 sha256) 逐文件 hash —— 同一路径、同尺寸但内容
         变化也会导致指纹不同，缓存必然失效重建（漏报面 G 类：改文件但
         大小不变时旧图复用 = 新增漏洞扫不出来）。
+
+        ``files``（可选）：写缓存时传入**实际入图的文件快照**（index_entries），
+        而非重扫全目录 —— 否则建图期间新增的文件进了指纹却不在图里，下次
+        校验指纹相等直接恢复旧图，该文件永久漏扫（对抗审查 C1 缓存 TOCTOU）。
+        为空时按 ``self._parser.providers`` 过滤（读取缓存时算「当前目录态」）。
 
         ``progress``（可选）：7 万文件级项目上这个函数要读全部源码算 hash，
         可耗时数分钟。逐源文件上报（set_total + step），避免静默卡死。
         """
         from hyqsast.cpg.languages import detect_by_extension
 
-        # 先收集源文件清单（一趟 rglob），再 set_total 逐文件 hash —— 分两趟
-        # 使进度条有总步数、ETA 可算；rglob 本身是轻量 stat，代价可忽略。
-        source_files: list[Path] = []
-        for entry in sorted(directory.rglob("*")):
-            if not entry.is_file():
-                continue
-            if any(p.startswith(".") or p == "__pycache__" for p in entry.parts):
-                continue
-            if detect_by_extension(str(entry)) is not None:
-                source_files.append(entry)
+        if files is None:
+            # 只收录本次配置语言的文件 —— 混合语言仓库按单语言扫描时，非扫描
+            # 语言文件（.py/.js）改动不得触发全量重建（对抗审查 C2 指纹过宽）。
+            source_files: list[Path] = []
+            for entry in sorted(directory.rglob("*")):
+                if not entry.is_file():
+                    continue
+                if any(p.startswith(".") or p == "__pycache__" for p in entry.parts):
+                    continue
+                if detect_by_extension(str(entry)) in self._parser.providers:
+                    source_files.append(entry)
+        else:
+            source_files = list(files)
         if progress is not None:
             progress.set_total(len(source_files))
         entries: list[str] = []
@@ -1008,7 +1020,12 @@ class CPGGraphBuilder:
         prog.stage("写缓存")
         if use_cache:
             try:
-                fingerprint = self._compute_source_fingerprint(root, progress=prog)
+                # C1（对抗审查）: 指纹基于实际入图的 index_entries 快照，而非写
+                # 缓存时重扫全目录 —— 否则建图期间新增的文件进指纹不进图，下次
+                # 校验指纹相等直接复用旧图，该文件永久漏扫。
+                fingerprint = self._compute_source_fingerprint(
+                    root, files=index_entries, progress=prog
+                )
                 with cache_path.open("wb") as fh:
                     pickle.dump((fingerprint, self.graph), fh, protocol=pickle.HIGHEST_PROTOCOL)
             except (pickle.PickleError, OSError):

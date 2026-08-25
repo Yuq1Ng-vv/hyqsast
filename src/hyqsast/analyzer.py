@@ -90,8 +90,16 @@ _SINK_STR_TEMPLATE_CATS: frozenset[str] = frozenset(
 # BFS 够不到）。节点已被 taint 型同类报过时，pattern 型让位避免重复 finding
 # （见 _pattern_findings 的 covered 去重）；评分侧靠 Finding.related_categories
 # 让 score.py 把 weak_crypto 也算 crypto 命中。
+# F7（对抗审查）: insecure_hash / weak_randomness 与 crypto_weakness 是同一
+# 「弱哈希 / 弱随机 API 使用」的两种接法——`MessageDigest.getInstance("MD5"` 同时列在
+# crypto_weakness（taint 型）与 insecure_hash（pattern 型）sinks，`new Random(` 同时
+# 列在 crypto_weakness 与 weak_randomness。同节点被 taint 型报过时 pattern 型让位
+# （去重）；被让位的类别并进该 taint finding 的 related_categories，保住 score.py
+# 的 1:1 类别映射（hash→insecure_hash / weakrand→weak_randomness）不因去重丢命中。
 _PATTERN_ALIAS_CATEGORIES: dict[str, tuple[str, ...]] = {
     "weak_crypto": ("crypto_weakness",),
+    "insecure_hash": ("crypto_weakness",),
+    "weak_randomness": ("crypto_weakness",),
 }
 
 
@@ -129,6 +137,9 @@ class Analyzer:
         # 场景显式开启。见 CPGGraphBuilder.__init__ 注释与 OWASP 回归对比。
         self.enable_container_bridge = enable_container_bridge
         self.enable_state_bridge = enable_state_bridge
+        # T2（对抗审查）: _source_files 结果缓存（directory/language init 后不变，
+        # _extract_endpoints 与 _summarize 各调一次全目录 rglob，70k 文件浪费）。
+        self._source_files_cache: list[str] | None = None
 
         self.parser = Parser(languages=[self.language])
         # rules_paths=None 时用内置 taint_rules.yaml；传入文件/目录则在
@@ -345,12 +356,17 @@ class Analyzer:
         # 再补一条 weak_crypto，避免 ~217 个已命中测试各多一条重复）。
         prog.stage("pattern 型漏洞")
         covered: set[tuple[str, int, str]] = set()
+        # F7: (sink 文件, sink 行) → taint finding 列表，供 _pattern_findings 去重时
+        # 把被让位的 pattern 类别并进对应 taint finding 的 related_categories。
+        findings_by_pos: dict[tuple[str, int], list[Finding]] = {}
         for f in findings:
             if f.sink and f.sink.file_path and f.sink.line:
-                covered.add((f.sink.file_path, f.sink.line, f.vuln_type))
+                pos = (f.sink.file_path, f.sink.line)
+                covered.add((pos[0], pos[1], f.vuln_type))
                 for rc in f.related_categories:
-                    covered.add((f.sink.file_path, f.sink.line, rc))
-        pattern_findings, pattern_skipped = self._pattern_findings(covered)
+                    covered.add((pos[0], pos[1], rc))
+                findings_by_pos.setdefault(pos, []).append(f)
+        pattern_findings, pattern_skipped = self._pattern_findings(covered, findings_by_pos)
         if pattern_skipped:
             self._truncated_categories = dict(pattern_skipped)
         findings.extend(pattern_findings)
@@ -363,7 +379,9 @@ class Analyzer:
         return findings
 
     def _pattern_findings(
-        self, covered: set[tuple[str, int, str]] | None = None
+        self,
+        covered: set[tuple[str, int, str]] | None = None,
+        findings_by_pos: dict[tuple[str, int], list[Finding]] | None = None,
     ) -> tuple[list[Finding], dict[str, int]]:
         """非污点流 pattern 型漏洞的 finding + 截断计数。
 
@@ -408,6 +426,23 @@ class Analyzer:
                         (node_file, node_line, alias) in covered
                         for alias in _PATTERN_ALIAS_CATEGORIES.get(cat, ())
                     ):
+                        # F7: 被让位的 pattern 类别并进同位置 taint finding 的
+                        # related_categories —— score.py 类别映射 1:1（hash→
+                        # insecure_hash / weakrand→weak_randomness），只去重不折算
+                        # 会让该测试从 hash/weakrand 类消失（TPR 掉）。取同位置
+                        # vuln_type==别名的 taint finding，把 cat 追加进去。
+                        taint_f = None
+                        if findings_by_pos:
+                            taint_f = next(
+                                (
+                                    f
+                                    for f in findings_by_pos.get((node_file, node_line), [])
+                                    if f.vuln_type in _PATTERN_ALIAS_CATEGORIES.get(cat, ())
+                                ),
+                                None,
+                            )
+                        if taint_f is not None and cat not in taint_f.related_categories:
+                            taint_f.related_categories.append(cat)
                         continue
                 finding = self._pattern_node_to_finding(nid, cat)
                 if finding is None:
@@ -1003,14 +1038,17 @@ class Analyzer:
 
         elements: list[TaintElement] = []
         for _nid, data in self.graph_builder.graph.nodes(data=True):
+            # T1（对抗审查）: 先判标签再求值字段 —— 无标签节点占绝大多数，先调
+            # _node_fields（含 code 读回兜底）再弃是纯浪费；输出等价（被跳过的
+            # 节点本就没有标签）。
+            label = data.get("taint_source") or data.get("taint_sink")
+            if not label:
+                continue
             file_path, line, function, code = self._node_fields(data)
             if not file_path or not line:
                 continue
             ntype = data.get("node_type", "")
             # source 优先：被标为 source 的节点不再评估 sink（与打标签一致）
-            label = data.get("taint_source") or data.get("taint_sink")
-            if not label:
-                continue
             kind = "source" if data.get("taint_source") else "sink"
             covered = (file_path, line) in (src_covered if kind == "source" else sink_covered)
             for cat in _split_taint_labels(label):
@@ -1101,15 +1139,19 @@ class Analyzer:
 
     def _source_files(self) -> list[str]:
         """返回目录下、匹配目标语言的所有源码文件（绝对路径）。"""
-        files: list[str] = []
-        for entry in sorted(self.directory.rglob("*")):
-            if not entry.is_file():
-                continue
-            if any(p.startswith(".") or p == "__pycache__" for p in entry.parts):
-                continue
-            if detect_by_extension(str(entry)) == self.language:
-                files.append(str(entry))
-        return files
+        # T2（对抗审查）: 结果与 self.directory/self.language 绑定（init 后不变），
+        # 缓存避免每次调用重做全目录 rglob + 排序（70k 文件级项目浪费两次遍历）。
+        if self._source_files_cache is None:
+            files: list[str] = []
+            for entry in sorted(self.directory.rglob("*")):
+                if not entry.is_file():
+                    continue
+                if any(p.startswith(".") or p == "__pycache__" for p in entry.parts):
+                    continue
+                if detect_by_extension(str(entry)) == self.language:
+                    files.append(str(entry))
+            self._source_files_cache = files
+        return self._source_files_cache
 
     def _detect_language(self) -> str:
         """按扩展名统计，取出现最多的受支持语言。"""
