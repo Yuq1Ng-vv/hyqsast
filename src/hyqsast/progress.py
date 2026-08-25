@@ -156,10 +156,10 @@ class _RichProgress(Progress):
         # 改为：阶段超时→实际占比上浮（吃剩余权重）→ c 跟着实际用时走，
         # ETA 收敛而不是永远增长。
         self._prior_total = 3600.0  # 名义总时长（秒），仅初始化每个阶段的先验
-        self._phase_t0 = 0.0        # 当前阶段 begin 时刻（monotonic）
-        self._phase_prior = 1.0     # 当前阶段预估总时长（秒，权重先验，固定不变）
-        self._cur_w_eff = 0.0       # 当前阶段实际权重（超时上浮）
-        self._weight_done = 0.0     # 已完成阶段的实际权重累计（fold 折入）
+        self._phase_t0 = 0.0  # 当前阶段 begin 时刻（monotonic）
+        self._phase_prior = 1.0  # 当前阶段预估总时长（秒，权重先验，固定不变）
+        self._cur_w_eff = 0.0  # 当前阶段实际权重（超时上浮）
+        self._weight_done = 0.0  # 已完成阶段的实际权重累计（fold 折入）
         self._phase_has_substages = False  # 本阶段是否调过 set_total（子阶段模式）
         self._phases: list[str] = []
         self._cur = -1
@@ -309,13 +309,18 @@ class _RichProgress(Progress):
             self._cur_w_eff = w * elapsed / self._phase_prior
             frac = 1.0
         # 剩余阶段按先验权重预留给未来（分母随当前阶段超时一起放大）
-        remaining = sum(
-            _PHASE_WEIGHTS.get(p, 1.0) for p in self._phases[self._cur + 1 :]
-        )
+        remaining = sum(_PHASE_WEIGHTS.get(p, 1.0) for p in self._phases[self._cur + 1 :])
         total_w = self._weight_done + self._cur_w_eff + remaining
         if total_w <= 0:
             return 0.0
-        return (self._weight_done + self._cur_w_eff * frac) * 100.0 / total_w
+        c = (self._weight_done + self._cur_w_eff * frac) * 100.0 / total_w
+        # BUG 63: 最后阶段（汇总）超时后 remaining=0、frac=1.0 → 分子=分母，
+        # c 恒等 100、总体 ETA 塌成 0:00，但阶段还在跑（用户看到总条 100%、
+        # 只剩阶段条在动）。封顶 99.4%（rich 百分比 %.0f → 显示 99%），只有
+        # end() 才把总条置 100；超时期间总体 ETA 保持非零并随用时走动。
+        if not self._ended:
+            c = min(c, 99.4)
+        return c
 
     def _overall_eta(self) -> str | None:
         """总体 ETA：``已用 × (1 - 完成度) / 完成度`` 线性外推。
