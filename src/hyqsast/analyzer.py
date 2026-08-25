@@ -63,6 +63,10 @@ def default_frameworks_for(language: str) -> list[str]:
 # 单次扫描每个漏洞类别最多产出的 finding 数（防止大型项目输出爆炸）
 _DEFAULT_MAX_FINDINGS_PER_CATEGORY = 50
 
+# BUG 62: 前向 BFS 深度上限（与 _bfs_to_sink 默认 max_depth 保持一致）。sink
+# 反向可达预筛（_sink_reachable）按同一深度反向扩张，保证预筛集是超集。
+_BFS_MAX_DEPTH = 20
+
 # P1-4: 「字符串模板」型注入 sink —— 危险载荷（SQL/命令/表达式串）只可能
 # 出现在第一个参数，其余参数位是绑定/参数（如 ``query(sql, params)``），
 # 污点流到这些位置不算语句注入，做位置门控。其余类别（xss/ssrf/nosql/
@@ -140,6 +144,8 @@ class Analyzer:
         self._src = _SourceCache()
         # P0-2: 被 max_findings_per_category 截断的类别计数（_build_findings 填充）
         self._truncated_categories: dict[str, int] = {}
+        # BUG 62: _callee_at_map 的惰性缓存（汇总阶段 _render_chain 复用）
+        self._callee_at: dict[tuple[str, int], str] | None = None
 
     # ── 入口 ────────────────────────────────────────────────────────────
 
@@ -277,14 +283,22 @@ class Analyzer:
 
         if source_ids and sink_set:
             prog.stage("源点前向 BFS")
+            # BUG 62: sink 反向可达预筛 —— 一次反向 BFS 算出 R =「_BFS_MAX_DEPTH
+            # 跳内能到任一 sink」的节点集。源点 ∉ R ⇒ 前向 BFS 必然 0 条路径
+            # （够不到任何 sink），整源跳过；R 同时传进 _bfs_to_sink 剪枝后继。
+            # 语义恒等：被跳过的源点本就会产出空结果；剪掉的节点不在任何合法
+            # src→sink 路径上，跳过/剪枝不改变任何 finding（见 _sink_reachable）。
+            reachable = self._sink_reachable(sink_set, _BFS_MAX_DEPTH)
             prog.set_total(len(source_ids))
             for src in source_ids:
                 prog.step(1)
+                if src not in reachable:
+                    continue
                 if per_category and all(
                     c >= self.max_findings_per_category for c in per_category.values()
                 ):
                     break
-                for node_ids, edge_types in self._bfs_to_sink(src, sink_set):
+                for node_ids, edge_types in self._bfs_to_sink(src, sink_set, reachable=reachable):
                     for cat in self._sink_categories(node_ids[-1]):
                         if per_category.get(cat, 0) >= self.max_findings_per_category:
                             skipped[cat] += 1
@@ -506,6 +520,7 @@ class Analyzer:
         sink_set: set[str],
         max_depth: int = 20,
         max_paths: int = 5,
+        reachable: set[str] | None = None,
     ) -> list[tuple[list[str], list[str]]]:
         """从 *src* 沿 DATA_FLOW/CALLS 前向 BFS 到任一 sink。
 
@@ -536,6 +551,10 @@ class Analyzer:
                 per_sink[cur] += 1
 
             for succ in graph.successors(cur):
+                # BUG 62: sink 走廊剪枝 —— reachable 外的节点到不了任何 sink，
+                # 任何合法路径都不经过它们，剪掉不改结果，只省扩张。
+                if reachable is not None and succ not in reachable:
+                    continue
                 etype = self._edge_type(cur, succ)
                 if etype is None:
                     continue
@@ -553,6 +572,37 @@ class Analyzer:
                 queue.append((succ, [*node_path, succ], [*edge_path, etype]))
 
         return results
+
+    def _sink_reachable(self, sink_set: set[str], max_depth: int) -> set[str]:
+        """sink 反向可达集 R（BUG 62）：反向 BFS 求「≤max_depth 跳内能到任一
+        sink」的节点全集，供源点预筛与前向 BFS 剪枝。
+
+        语义保证（与 _build_findings 的跳源、_bfs_to_sink 的剪枝配套）：
+        - 源点 ∉ R ⇒ 前向 BFS 沿 DATA_FLOW/CALLS 最多 max_depth 跳够不到任何
+          sink ⇒ 必然 0 条路径，整源跳过不改变任何 finding（产出本就为空）。
+        - 任一合法 src→sink 路径（≤max_depth 跳）的每个中间节点都在 R 内——
+          该路径本身就把每个节点带到了 sink。故前向 BFS 以 R 为后继白名单
+          剪枝不会丢任何路径，结果恒等。
+        - 反向多跑满 max_depth 跳：前向记录路径最长 max_depth+1 个节点
+          （visited 重入分支），即 ≤max_depth 条边，R 是严格超集，安全。
+        """
+        graph = self.graph_builder.graph
+        r: set[str] = set(sink_set)
+        frontier: set[str] = set(sink_set)
+        for _ in range(max_depth):
+            nxt: set[str] = set()
+            for cur in frontier:
+                for pred in graph.predecessors(cur):
+                    if pred in r:
+                        continue
+                    if self._edge_type(pred, cur) is None:
+                        continue
+                    nxt.add(pred)
+            if not nxt:
+                break
+            r |= nxt
+            frontier = nxt
+        return r
 
     def _edge_type(self, u: str, v: str) -> str | None:
         """若 u→v 存在 DATA_FLOW/CALLS 边，返回其类型，否则 None。"""
@@ -735,10 +785,12 @@ class Analyzer:
         """
         sink = f.sink
         best: tuple[int, int] | None = None
-        for _, data in self.graph_builder.graph.nodes(data=True):
+        # BUG 62: 用文件索引（_file_node_ids，含 pickle 恢复回退）代替全图扫描
+        # —— 每条 finding 从 O(全图) 降到 O(本文件节点)。汇总阶段原先
+        # O(findings×全图节点)。
+        for nid in self.graph_builder._file_node_ids(sink.file_path):
+            data = self.graph_builder.graph.nodes[nid]
             if data.get("node_type") != NODE_FUNCTION:
-                continue
-            if data.get("file_path") != sink.file_path:
                 continue
             start = data.get("start_line") or 0
             end = data.get("end_line") or 0
@@ -760,6 +812,26 @@ class Analyzer:
             out.append(f"{flag} {n:>{width}} | {text.rstrip()}{suffix}")
         return "\n".join(out)
 
+    def _callee_at_map(self) -> dict[tuple[str, int], str]:
+        """(file, line) → callee 的惰性缓存（BUG 62）。
+
+        原实现 _render_chain 每条 finding 全图扫一遍构建同一张表 —— 汇总阶段
+        O(findings×全图节点)。这里首次调用构建一次（O(全图)），此后全部 finding
+        复用。构建项与原逐条全扫完全一致（同 key 后写胜出、插入序相同），
+        结果恒等。
+        """
+        if self._callee_at is None:
+            callee_at: dict[tuple[str, int], str] = {}
+            for _, data in self.graph_builder.graph.nodes(data=True):
+                if (
+                    data.get("node_type") == NODE_CALL_SITE
+                    and data.get("callee")
+                    and data.get("line")
+                ):
+                    callee_at[(data.get("file_path", ""), data.get("line"))] = data["callee"]
+            self._callee_at = callee_at
+        return self._callee_at
+
     def _render_chain(self, f: Finding) -> str:
         """把 finding 的节点路径折叠成函数级真实链 ``x -> y -> z -> sink``。
 
@@ -767,10 +839,9 @@ class Analyzer:
         ``file:line``；同一函数内的连续步骤折叠为一步。
         """
         # (file, line) → callee：call_site 步骤折叠成「被调用的函数」hop
-        callee_at: dict[tuple[str, int], str] = {}
-        for _, data in self.graph_builder.graph.nodes(data=True):
-            if data.get("node_type") == NODE_CALL_SITE and data.get("callee") and data.get("line"):
-                callee_at[(data.get("file_path", ""), data.get("line"))] = data["callee"]
+        # BUG 62: 全图 callee 索引惰性构建一次（_callee_at_map），不再每条
+        # finding 重扫全图（汇总阶段原 O(findings×全图节点)）。
+        callee_at = self._callee_at_map()
 
         hops: list[tuple[str, str]] = []  # (函数名, 相对路径:行号)
         total = len(f.call_chain)
