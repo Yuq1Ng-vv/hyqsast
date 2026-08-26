@@ -697,7 +697,10 @@ python:
     - django.shortcuts.render(
     - django.template.loader.render_to_string(
     - django.utils.safestring.mark_safe(
-    - escape(
+    # P1-7: 裸 'escape(' → 'unescape('。escape( 是转义净化（html.escape/markupsafe.escape/
+    # re.escape 等子串全被误标 xss sink=纯 FP 源），且把 sink 错定位到转义/解码调用处；
+    # unescape( 才是危险方向（解除转义重新放行 XSS），保留解码点的 sink 定位。
+    - unescape(
     - format_error(
     - format_html(
     - jinja2.Template(
