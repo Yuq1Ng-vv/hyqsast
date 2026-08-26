@@ -3142,7 +3142,6 @@ java:
     - Path.resolve(
     - Path.toFile(
     - .getAbsolutePath(
-    - .getCanonicalPath(
     - File.toPath(
     - getResource(
     - getResourceAsStream(
@@ -3177,7 +3176,8 @@ java:
     # A 类收窄：``Path(`` 裸类型名只命中 .getPath( / getContextPath( / toPath( /
     # setPath( 等方法名子串（audit 53 命中全噪声；OWASP testcode 只命中
     # setPath(Cookie) 与 XPath 声明）。真 path sink 已由 Paths.get( / Path.resolve( /
-    # .getCanonicalPath( / File.toPath( 等精确模式覆盖。
+    # File.toPath( 等精确模式覆盖（.getCanonicalPath( 是查路径非写文件，P1-4 移出 sink）。
+    # 真 I/O sink 由 FileInputStream( / FileOutputStream( / FileUtils.writeStringToFile( 承担。
     ssrf:
     - new URL(
     - URL.openConnection(
@@ -3376,7 +3376,6 @@ java:
     - Authentication.getAuthorities(
     - Authentication.isAuthenticated(
     - .isAuthenticated(
-    - .hasRole(
     - .hasAuthority(
     - .hasAnyRole(
     - .hasAnyAuthority(
@@ -3395,7 +3394,6 @@ java:
     - '{noop}'
     - SecurityUtils.getSubject(
     - Subject.isAuthenticated(
-    - Subject.hasRole(
     - Subject.isPermitted(
     - Subject.checkPermission(
     - Subject.checkRole(
@@ -3729,6 +3727,9 @@ java:
     - AccessController.checkPermission(
     - .getCanonicalFile(
     auth_bypass:
+    # P1-4（2026-08-26）：hasRole( 是鉴权判断（守卫）不是绕过，从 sinks 移入——
+    # 角色校验在路径上标 sanitized（finding 照发，仅报告标记），不再作 bypass sink。
+    - .hasRole(
     - BCryptPasswordEncoder
     - PasswordEncoder.matches(
     - Pbkdf2PasswordEncoder
