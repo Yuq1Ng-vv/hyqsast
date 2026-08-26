@@ -1,10 +1,11 @@
 python:
   # sink_excludes：正则在候选 sink 文本上 re.search，命中则丢弃 sink 标签。
-  # 这里排除「显式 verify=True 的 jwt.decode」——它是安全的签名校验用法，
-  # 不应报 auth_bypass；而 verify=False 或未指定 verify 的 decode 仍按
-  # 不安全用法保留（召回优先，误报可接受）。
+  # P1-6（2026-08-26）：auth_bypass 的 jwt.decode 只保留「显式 verify=False」——
+  # 签名校验跳过才是绕过；显式 verify=True 与省略 verify（PyJWT 默认 True）
+  # 都是安全校验，排除。负向环视：decode 调用后 300 字符内无 verify=False 即排除。
+  # 效果：vampi 6 条正常 decode 误报消除，vfa 的 verify=False 真绕过保留。
   sink_excludes:
-  - 'jwt\.decode\(.*verify\s*=\s*True'
+  - 'jwt\.decode\((?![\s\S]{0,300}?verify\s*=\s*False)'
   sources:
     sql_injection:
     - request.FILES.get(
@@ -1017,70 +1018,23 @@ python:
     - types.ModuleType(
     - types.new_class(
     auth_bypass:
-    - .check_api_key(
-    - '@login_required'
-    - APIKey
-    - Depends(
-    - HTTPBasic(
-    - IsAdminUser
-    - IsAuthenticated
-    - LoginRequiredMixin
-    - OAuth2PasswordBearer(
-    - OAuth2PasswordRequestForm
-    - Permission(
-    - PermissionRequiredMixin
+    # P1-6 方向修正（2026-08-26）：删认证机制/守卫/声明/密码校验——它们收到
+    # 污点是「正常认证路径」，不是绕过（Depends/HTTPBasic/OAuth2PasswordBearer/
+    # Security 是 FastAPI 类型声明；login_required/IsAuthenticated 是守卫；
+    # bcrypt.checkpw/check_password_hash 是密码校验；current_user 是登录态引用；
+    # request.headers.get('Authorization') 是源不是 sink，原属错位）。
+    # 只保留可能构成真绕过的形态（BFS 源可达门控下）：login_user(/login( 登录
+    # 任意用户、jwt.decode(/encode( 及同族（verify=False 签名跳过由 sink_excludes
+    # 兜）。结构态（硬编码密钥等）另立 P 项。
     - PyJWT.decode(
-    - Security(
-    - SessionAuthentication
-    - TokenAuthentication
-    - UserPassesTestMixin
-    - X-API-Key
-    - api_key
-    - authenticate(
-    - authentication_classes
-    - authlib.integrations.django_client.
-    - authlib.integrations.flask_client.
     - authlib.jose.JsonWebToken.decode(
     - authlib.jose.jwt.decode(
-    - bcrypt.checkpw(
-    - bcrypt.hashpw(
-    - current_user
-    - django.contrib.auth.
-    - django.contrib.auth.hashers.
-    - fastapi.security.HTTPBearer(
-    - fastapi.security.OAuth2AuthorizationCodeBearer(
-    - fastapi.security.api_key.APIKeyHeader(
-    - get_current_active_user
-    - get_current_user
-    - hashlib.pbkdf2_hmac(
-    - hashlib.scrypt(
-    - identity_loaded
     - jwt.decode(
     - jwt.encode(
     - login(
-    - login_required
     - login_user(
-    - logout(
-    - logout_user(
-    - mozilla_django_oidc.
-    - oauthlib.oauth2.
-    - onelogin.saml2.
-    - passlib.hash.
-    - permission_classes
-    - permission_required
-    - permissions.IsAuthenticated
-    - pysaml2.client.Saml2Client(
     - python_jwt.decode(
     - python_jwt.process_jwt(
-    - python_jwt.verify_jwt(
-    - request.headers.get('Authorization')
-    - requests_oauthlib.
-    - saml2.client.Saml2Client(
-    - social_core.backends.
-    - user_passes_test(
-    - verify_api_key(
-    - werkzeug.security.check_password_hash(
-    - werkzeug.security.generate_password_hash(
     xxe:
     - BeautifulSoup(.*, 'xml')
     - defusedxml.ElementTree.fromstring(
