@@ -3024,6 +3024,24 @@ java:
   - 'getResponseBodyAsString\s*\('
   - '\.getMessage\s*\('
   - 'MessageFormat\s*\.\s*format\s*\([^)]*getString'
+  # P1-8b（2026-08-26）：xxe 的 .parse( 是 OWASP 唯一调用点 sink（承重），但会命中
+  # java.time / Jsoup / SimpleDateFormat 的正常解析——排除这些已知非 XXE 接收者。
+  # xpath 的 .evaluate( 兜住 OWASP 全部 xpath 锚点，但跨类别误报 SpEL/JEXL/shell——排除。
+  - 'LocalDate\.parse\('
+  - 'LocalDateTime\.parse\('
+  - 'LocalTime\.parse\('
+  - 'Instant\.parse\('
+  - 'Duration\.parse\('
+  - 'Year\.parse\('
+  - 'YearMonth\.parse\('
+  - 'OffsetDateTime\.parse\('
+  - 'ZonedDateTime\.parse\('
+  - 'SimpleDateFormat\.parse\('
+  - 'DateFormat\.parse\('
+  - 'Jsoup\.parse\('
+  - 'expression\.evaluate\('
+  - 'expr\.evaluate\('
+  - 'shell\.evaluate\('
   # P1-8（2026-08-26）：P1-5 的 md.update/StringBuilder.insert 排除已随本批次
   # 移除——`.update(`/`.insert(` 已由裸模式收窄为接收者限定（sqlSession/update 等），
   # MessageDigest/Signature/StringBuilder 等非 SQL 接收者天然不再命中，排除冗余。
@@ -3113,6 +3131,7 @@ java:
     - req.getRequestURL(
     - request.getRequestURI(
     - req.getRequestURI(
+    - request.getParts(
     deserialization:
     - request.getInputStream(
     - item.getInputStream(
@@ -3159,6 +3178,7 @@ java:
     - request.getHeader("Authorization"
     - req.getHeader("Authorization"
     - request.getSession().getAttribute(
+    - cookie.getValue(
     xxe:
     - request.getParameter(
     - req.getParameter(
@@ -3241,6 +3261,8 @@ java:
     - getRequestParameter(
     - request().queryString(
     - .getEntityStream(
+    - request.getParts(
+    - cookie.getValue(
   sinks:
     sql_injection:
     - .executeQuery(
