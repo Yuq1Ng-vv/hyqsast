@@ -576,28 +576,22 @@ python:
     - .cursor(
     - .exclude(
     - .exclude(**
-    - .execute(
     - .executemany(
     - .executescript(
     - .extra(
     - .fetch(
     - .fetchrow(
     - .fetchval(
-    - .filter(
     - .filter(**
     - .order_by(
     - .prefetch_related(
-    - .query(
     - .raw(
     - .raw_connection(
     - .raw_cursor(
-    - .run(
     - .scalar(
     - .scalars(
-    - .select(
     - .select_related(
     - .values(
-    - .where(
     - Delete(
     - Func(
     - Gino.
@@ -642,7 +636,6 @@ python:
     - sqlalchemy.update(
     - sqlite3.Connection.execute(
     - sqlite3.connect(
-    - text(
     - import sqlalchemy
     - import mysql
     - import mysql.cursors
@@ -656,6 +649,9 @@ python:
     - sqlalchemy.text(
     - sa.text(
     - db.text(
+    - session.query(
+    - db.query(
+    - Model.query(
     command_injection:
     - .exec_run(
     - .shell = True
