@@ -34,6 +34,13 @@ def main(argv: list[str] | None = None) -> int:
         help="额外规则文件或目录（可多次指定，*.yaml 在内置规则之上追加合并）",
     )
     parser.add_argument("--max-findings", type=int, default=50, help="每类别最多 finding 数")
+    parser.add_argument(
+        "--vuln-types",
+        default=None,
+        metavar="LIST",
+        help="逗号分隔的漏洞类别白名单（如 sql_injection,xss；缺省全扫）。"
+        "只在规则加载层收窄 sink 类别，source 与 sanitizer 全保留",
+    )
     parser.add_argument("--output", "-o", default=None, help="JSON 报告输出路径")
     parser.add_argument(
         "--no-canonical",
@@ -82,6 +89,12 @@ def main(argv: list[str] | None = None) -> int:
             rules_paths = [str(auto)]
             print(f"自动加载额外规则目录: {auto}（用 --rules 可覆盖）")
 
+    # --vuln-types: 逗号分隔类别白名单；strip 去空、全空白/空串回退全扫（None）
+    vuln_types = None
+    if args.vuln_types:
+        parsed = [s.strip() for s in args.vuln_types.split(",") if s.strip()]
+        vuln_types = parsed or None
+
     # 控制台进度条：tty+rich → 双进度条；否则纯文本阶段日志（stderr）。
     # 概况统计与扫描各用一个进度实例 —— 概况的条走完后要停掉、打印概况行，
     # 再起扫描的条（rich Live 同流直印会互相覆盖，分开最稳）。
@@ -102,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             include_blind_spots=not args.no_blind_spots,
             use_cache=not args.no_cache,
             rules_paths=rules_paths,
+            vuln_types=vuln_types,
             enable_container_bridge=args.enable_container_bridge,
             enable_state_bridge=args.enable_state_bridge,
             progress=progress,
@@ -185,9 +199,7 @@ def _fmt_finding(f: Finding) -> str:
     )
 
 
-def _project_overview(
-    directory: str | Path, progress: object | None = None
-) -> str | None:
+def _project_overview(directory: str | Path, progress: object | None = None) -> str | None:
     """统计源码目录的语言文件数与总行数（扫描前打印概况）。
 
     只统计受支持语言（java/python/javascript）。逐文件分块读，内存有界

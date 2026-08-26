@@ -58,7 +58,12 @@ class TaintRuleLoader:
     without editing the 4600-line built-in rule base.
     """
 
-    def __init__(self, rules_paths: str | Path | list[str | Path] | None = None) -> None:
+    def __init__(
+        self,
+        rules_paths: str | Path | list[str | Path] | None = None,
+        *,
+        sink_categories_allowlist: set[str] | None = None,
+    ) -> None:
         # 内置 taint_rules.yaml 永远在首位：额外规则只负责「追加」，不替换内置。
         builtin = Path(__file__).resolve().parent / "taint_rules.yaml"
         if rules_paths is None:
@@ -72,7 +77,21 @@ class TaintRuleLoader:
         # BFS 够不到；这些类别代表「危险 API 使用本身」，analyzer 对每个
         # 被标上该类别的节点无条件产出 finding。见 ``pattern_sinks`` 节。
         self._pattern_categories: dict[str, set[str]] = {}
+        # --vuln-types 定向扫描：只保留 allowlist 内的 sink 类别。
+        # 注意只删 sinks 键——sources/sanitizers 必须全保留（BFS 从所有
+        # source 出发、sanitizer 跨类别共享，否则漏报/误伤）。None = 全扫。
+        self._sink_categories_allowlist: set[str] | None = (
+            set(sink_categories_allowlist) if sink_categories_allowlist else None
+        )
         self._load()
+        # 过滤前快照每语言的全量 sink 类别（供 Analyzer 校验用户类别名；
+        # 过滤后就查不出拼错了）
+        self._known_sink_categories: dict[str, set[str]] = {
+            lang: set((ld.get("sinks") or {}).keys())
+            for lang, ld in self._data.items()
+            if isinstance(ld, dict)
+        }
+        self._apply_sink_allowlist()
 
     @staticmethod
     def _resolve_paths(rules_paths: str | Path | list[str | Path]) -> list[Path]:
@@ -102,6 +121,31 @@ class TaintRuleLoader:
             else:
                 logger.warning("规则文件顶层应为 dict，忽略: %s", path)
         self._validate()
+
+    def _apply_sink_allowlist(self) -> None:
+        """按 ``sink_categories_allowlist`` 收窄 sinks：只删 ``sinks`` 键，不碰 sources/sanitizers。
+
+        ``_data[lang]["sinks"]`` 里 allowlist 之外的类别整个删掉（对应 sink
+        模式不再参与打标）；``_pattern_categories`` 同步取交集（pattern 类别
+        必然也在 sinks 节，双重保险）。``rules_for`` 仍会重建出非 allowlist
+        类别（sources/sanitizers 在），但 ``cat.sinks`` 为空 —— 配合
+        ``match_all_sinks``/``match_sink`` 的 ``if not cat.sinks: continue``
+        快速跳过，内层子串匹配只落在选中的类别上。
+        """
+        allow = self._sink_categories_allowlist
+        if not allow:
+            return
+        for lang, lang_data in self._data.items():
+            if not isinstance(lang_data, dict):
+                continue
+            sinks = lang_data.get("sinks")
+            if isinstance(sinks, dict):
+                lang_data["sinks"] = {c: p for c, p in sinks.items() if c in allow}
+            self._pattern_categories[lang] = self._pattern_categories.get(lang, set()) & allow
+
+    def known_sink_categories(self, language: str) -> set[str]:
+        """返回 *language* 过滤前登记的全量 sink 类别（含 ``rules/`` 额外规则）。"""
+        return set(self._known_sink_categories.get(language, set()))
 
     def fingerprint(self) -> str:
         """规则集内容指纹：对全部规则文件（内置 + 额外）做内容 hash。
@@ -308,6 +352,10 @@ class TaintRuleLoader:
         best_len = 0
         best_cat: str | None = None
         for cat_name, cat in rules.categories.items():
+            # 非 allowlist 类别经 _apply_sink_allowlist 收窄后 cat.sinks 为空，
+            # O(1) 跳过，避免在百万节点图上白遍历空列表
+            if not cat.sinks:
+                continue
             for pat in cat.sinks:
                 if pat in text and len(pat) > best_len:
                     best_len = len(pat)
@@ -319,6 +367,8 @@ class TaintRuleLoader:
         rules = self.rules_for(language)
         matches: list[str] = []
         for cat_name, cat in rules.categories.items():
+            if not cat.sinks:
+                continue
             for pat in cat.sinks:
                 if pat in text:
                     matches.append(cat_name)

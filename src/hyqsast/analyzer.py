@@ -117,6 +117,7 @@ class Analyzer:
         severity_overrides: dict[str, str] | None = None,
         rules_paths: str | Path | list[str | Path] | None = None,
         *,
+        vuln_types: list[str] | None = None,
         enable_container_bridge: bool = False,
         enable_state_bridge: bool = False,
         progress: Progress | None = None,
@@ -137,6 +138,11 @@ class Analyzer:
         # 场景显式开启。见 CPGGraphBuilder.__init__ 注释与 OWASP 回归对比。
         self.enable_container_bridge = enable_container_bridge
         self.enable_state_bridge = enable_state_bridge
+        # --vuln-types 定向扫描：只产指定 sink 类别的 finding（None = 全扫）。
+        # 只在规则加载层收窄 sinks，source 与 sanitizer 全保留（见 taint_loader
+        # _apply_sink_allowlist 注释）——BFS 从所有 source 出发、sanitizer
+        # 跨类别共享，过滤 source/sanitizer 会漏报/误伤。
+        self.vuln_types = list(vuln_types) if vuln_types else None
         # T2（对抗审查）: _source_files 结果缓存（directory/language init 后不变，
         # _extract_endpoints 与 _summarize 各调一次全目录 rglob，70k 文件浪费）。
         self._source_files_cache: list[str] | None = None
@@ -144,7 +150,21 @@ class Analyzer:
         self.parser = Parser(languages=[self.language])
         # rules_paths=None 时用内置 taint_rules.yaml；传入文件/目录则在
         # 内置规则之上追加合并（见 TaintRuleLoader 的 merge 语义）
-        self.taint_loader = TaintRuleLoader(rules_paths=rules_paths)
+        self.taint_loader = TaintRuleLoader(
+            rules_paths=rules_paths,
+            sink_categories_allowlist=set(vuln_types) if vuln_types else None,
+        )
+        # --vuln-types 类别名校验：用 loader 过滤前快照的全量 sink 类别
+        # （含 rules/ 额外规则），而非 SEVERITY_MAP——YAML 才是单一事实源，
+        # 能捕获 --rules 自定义类别。抛 ValueError 与 _resolve_frameworks
+        # 对未知框架的约定一致。
+        if vuln_types:
+            known = self.taint_loader.known_sink_categories(self.language)
+            unknown = sorted({t for t in vuln_types if t not in known})
+            if unknown:
+                raise ValueError(
+                    f"未知漏洞类别: {unknown}（语言 {self.language} 可用: {sorted(known)}）"
+                )
         self.graph_builder = CPGGraphBuilder(
             self.parser,
             taint_loader=self.taint_loader,
@@ -305,11 +325,7 @@ class Analyzer:
             # break，排在后面的类别（还没轮到它的 source）被整类饿死（FN）。
             # 换成 sink 类别全集后，未产出类别 get()=0 < cap → 不会提前 break；
             # 已饱和类别仍能触发早退（预算保护不丢）。
-            target_categories = {
-                cat
-                for n in sink_set
-                for cat in self._sink_categories(n)
-            }
+            target_categories = {cat for n in sink_set for cat in self._sink_categories(n)}
             prog.set_total(len(source_ids))
             for src in source_ids:
                 prog.step(1)
@@ -814,6 +830,7 @@ class Analyzer:
                         f"{vuln_display_name(f.vuln_type)} @ {f.sink.file_path}:{f.sink.line}"
                     ),
                     endpoint=self._render_endpoint(f.endpoint),
+                    source_function=self._source_function_block(f),
                     sink_function=self._sink_function_block(f),
                     call_chain=self._render_chain(f),
                 )
@@ -830,40 +847,47 @@ class Analyzer:
         methods = "/".join(m.methods) or "ANY"
         return f"{methods} {m.route} @ {m.file_path}:{m.line} ({m.handler_func})"
 
-    def _sink_function_block(self, f: Finding, margin: int = 5) -> str:
-        """返回 sink 点所在函数的完整源码：带行号，sink 行标 ``▶`` 并尾注类别。
+    def _function_block(self, node: NodeRef, label: str, vuln_type: str, margin: int = 5) -> str:
+        """返回 *node* 所在函数的完整源码：带行号，node 行标 ``▶`` 并尾注类别。
 
-        在图中找 ``file_path`` 相同且包含 sink 行的函数节点（取范围最小者）；
-        找不到时退化为 sink 行 ±*margin* 行的窗口。
+        在图中找 ``file_path`` 相同且包含 node 行的函数节点（取范围最小者）；
+        找不到时退化为 node 行 ±*margin* 行的窗口。
         """
-        sink = f.sink
         best: tuple[int, int] | None = None
         # BUG 62: 用文件索引（_file_node_ids，含 pickle 恢复回退）代替全图扫描
         # —— 每条 finding 从 O(全图) 降到 O(本文件节点)。汇总阶段原先
         # O(findings×全图节点)。
-        for nid in self.graph_builder._file_node_ids(sink.file_path):
+        for nid in self.graph_builder._file_node_ids(node.file_path):
             data = self.graph_builder.graph.nodes[nid]
             if data.get("node_type") != NODE_FUNCTION:
                 continue
             start = data.get("start_line") or 0
             end = data.get("end_line") or 0
-            if start and end and start <= sink.line <= end:
+            if start and end and start <= node.line <= end:
                 if best is None or (end - start) < (best[1] - best[0]):
                     best = (start, end)
         if best is None:
-            start, end = max(1, sink.line - margin), sink.line + margin
+            start, end = max(1, node.line - margin), node.line + margin
         else:
             start, end = best
 
-        lines = self._src.slice(sink.file_path, start, end)
+        lines = self._src.slice(node.file_path, start, end)
         width = len(str(end))
         out: list[str] = []
         for n, text in enumerate(lines, start=start):
-            flag = "▶" if n == sink.line else " "
-            # rstrip：源码行尾若有空白，紧贴代码放 sink 标注更整洁
-            suffix = f"  // ← SINK: {f.vuln_type}" if n == sink.line else ""
+            flag = "▶" if n == node.line else " "
+            # rstrip：源码行尾若有空白，紧贴代码放标注更整洁
+            suffix = f"  // ← {label}: {vuln_type}" if n == node.line else ""
             out.append(f"{flag} {n:>{width}} | {text.rstrip()}{suffix}")
         return "\n".join(out)
+
+    def _sink_function_block(self, f: Finding, margin: int = 5) -> str:
+        """返回 sink 点所在函数的完整源码（见 :meth:`_function_block`）。"""
+        return self._function_block(f.sink, "SINK", f.vuln_type, margin)
+
+    def _source_function_block(self, f: Finding, margin: int = 5) -> str:
+        """返回 source 点所在函数的完整源码（见 :meth:`_function_block`）。"""
+        return self._function_block(f.source, "SOURCE", f.vuln_type, margin)
 
     def _callee_at_map(self) -> dict[tuple[str, int], str]:
         """(file, line) → callee 的惰性缓存（BUG 62）。

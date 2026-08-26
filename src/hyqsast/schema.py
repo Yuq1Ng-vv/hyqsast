@@ -227,6 +227,7 @@ class CanonicalFinding:
 
     - ``vuln_name``: 中文漏洞名 + 漏洞所在文件位置
     - ``endpoint``: 漏洞所在的 HTTP 接口（方法 + 路由 + 文件位置）
+    - ``source_function``: source 点所在函数完整源码（带行号，source 行标 ``▶``）
     - ``sink_function``: sink 点所在函数完整源码（带行号，sink 行标 ``▶``）
     - ``call_chain``: 函数级真实调用链 ``x -> y -> z -> sink``（每个 hop 带 file:line）
     """
@@ -235,6 +236,7 @@ class CanonicalFinding:
     vuln_type: str = ""
     vuln_name: str = ""
     endpoint: str = ""
+    source_function: str = ""
     sink_function: str = ""
     call_chain: str = ""
 

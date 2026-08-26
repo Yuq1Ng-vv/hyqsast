@@ -28,6 +28,7 @@ def scan(
     severity_overrides: dict[str, str] | None = None,
     rules_paths: str | Path | list[str | Path] | None = None,
     *,
+    vuln_types: list[str] | None = None,
     enable_container_bridge: bool = False,
     enable_state_bridge: bool = False,
     progress: Progress | None = None,
@@ -44,6 +45,9 @@ def scan(
         severity_overrides: 覆盖默认的 vuln_type → severity 映射。
         rules_paths: 额外规则文件（或目录，自动 glob ``*.yaml``）。在内置
             ``taint_rules.yaml`` 之上按 ``(语言, 区块, 类别)`` 追加去重合并。
+        vuln_types: 定向扫描的漏洞类别白名单（如 ``["sql_injection", "xss"]``）。
+            只在规则加载层收窄 sink 类别，source 与 sanitizer 全保留（BFS 从所有
+            source 出发、sanitizer 跨类别共享）。None = 全扫。
         enable_container_bridge: 开启「容器/Builder 状态写读桥接」启发式
             （默认关）。这是过近似：``sb.append(t); s = sb.toString()`` 这类
             链它才有边。默认关会牺牲该类别漏报面（A 类）的部分召回，见
@@ -65,6 +69,7 @@ def scan(
         use_cache=use_cache,
         severity_overrides=severity_overrides,
         rules_paths=rules_paths,
+        vuln_types=vuln_types,
         enable_container_bridge=enable_container_bridge,
         enable_state_bridge=enable_state_bridge,
         progress=progress,
