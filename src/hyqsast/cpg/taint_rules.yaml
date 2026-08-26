@@ -6,6 +6,10 @@ python:
   # 效果：vampi 6 条正常 decode 误报消除，vfa 的 verify=False 真绕过保留。
   sink_excludes:
   - 'jwt\.decode\((?![\s\S]{0,300}?verify\s*=\s*False)'
+  # P1-6b（2026-08-26）：Response( 只排除显式指定 application/json mimetype 的
+  # ——JSON 响应浏览器不当 HTML 渲染，不是 XSS（vampi 23 条 FP）；无 mimetype
+  # 参数（Flask 默认 text/html）反射用户输入是真 XSS（vfa /login 实证），保留。
+  - 'Response\([\s\S]{0,200}?mimetype\s*=\s*["'']application/json'
   sources:
     sql_injection:
     - request.FILES.get(
@@ -654,14 +658,11 @@ python:
     - Model.query(
     command_injection:
     - .exec_run(
-    - .shell = True
-    - .shell=True
     - asyncio.create_subprocess_exec(
     - asyncio.create_subprocess_shell(
     - asyncio.subprocess.Process
     - azure.mgmt.
     - bash(
-    - boto3.client(
     - code.InteractiveConsole(
     - code.InteractiveInterpreter(
     - docker.from_env(
@@ -727,7 +728,6 @@ python:
     - ORJSONResponse(
     - PlainTextResponse(
     - RedirectResponse(
-    - Response(
     - ServerSentEvent(
     - StreamingResponse(
     - UJSONResponse(
@@ -737,7 +737,6 @@ python:
     - bottle.mako_template(
     - bottle.response(
     - bottle.template(
-    - callback
     - cherrypy.lib.static.
     - cherrypy.response.body
     - cmark.
@@ -751,11 +750,9 @@ python:
     # re.escape 等子串全被误标 xss sink=纯 FP 源），且把 sink 错定位到转义/解码调用处；
     # unescape( 才是危险方向（解除转义重新放行 XSS），保留解码点的 sink 定位。
     - unescape(
-    - format_error(
     - format_html(
     - jinja2.Template(
     - json_script(
-    - jsonp
     - lxml.etree.tostring(
     - mail_admins(
     - mail_managers(
@@ -772,10 +769,8 @@ python:
     - reportlab.platypus.Paragraph(
     - send_mail(
     - sse.
-    - sys.exc_info(
     - tornado.template.Loader(
     - tornado.template.Template(
-    - traceback.format_exc(
     - weasyprint.HTML(
     - web.Response(
     - web.json_response(
@@ -786,6 +781,7 @@ python:
     - xhtml2pdf.pisa.CreatePDF(
     - xml.etree.ElementTree.tostring(
     - xmltodict.unparse(
+    - Response(
     path_traversal:
     - FileResponse(
     - StreamingResponse(
@@ -916,10 +912,6 @@ python:
     - requests.put(
     - requests.request(
     - sendgrid.
-    - session.get(
-    - session.post(
-    - session.put(
-    - session.request(
     - sgqlc.endpoint.
     - slack.WebClient(
     - slack_sdk.WebClient(
@@ -991,7 +983,6 @@ python:
     - msgpack.loads(
     - msgpack.unpackb(
     - numpy.lib.npyio.NpzFile(
-    - numpy.load(
     - numpy.loads(
     - pandas.read_feather(
     - pandas.read_msgpack(
@@ -1029,6 +1020,8 @@ python:
     - yaml.unsafe_load_all(
     - Unpickler(
     - ruamel.yaml.load(
+    - cloudpickle.load(
+    - cloudpickle.loads(
     open_redirect:
     - HttpResponsePermanentRedirect(
     - HttpResponseRedirect(
@@ -1059,7 +1052,6 @@ python:
     code_injection:
     - IPython.display.
     - __import__(
-    - ast.literal_eval(
     - ast.parse(
     - builtins.
     - code.InteractiveConsole(
@@ -1075,9 +1067,7 @@ python:
     - importlib.import_module(
     - ipywidgets.
     - marshal.loads(
-    - pipes.quote(
     - setattr(
-    - shlex.split(
     - subprocess.Popen(shell=True)
     - subprocess.call(shell=True)
     - subprocess.run(shell=True)
@@ -1107,9 +1097,6 @@ python:
     - csrf_exempt
     xxe:
     - BeautifulSoup(.*, 'xml')
-    - defusedxml.ElementTree.fromstring(
-    - defusedxml.ElementTree.parse(
-    - defusedxml.lxml.parse(
     - lxml.etree.XMLParser(
     - lxml.etree.XSLT(
     - lxml.etree.XSLT.parse(
@@ -1134,7 +1121,6 @@ python:
     - xml.sax.parse(
     - xml.sax.parseString(
     - xmltodict.parse(
-    - Document(
     - fromstring(
     - iterparse(
     - etree.parse(
@@ -1144,6 +1130,7 @@ python:
     - make_parser(
     - XMLParser(
     - etree.XML(
+    - Document(
     ssti:
     - Engine.from_string(
     - Environment(
@@ -1215,7 +1202,14 @@ python:
     - Cryptodome.Hash.MD5
     - Cryptodome.Hash.SHA1
     nosql_injection:
+    - collection.find(
+    - .find_one(
+    - $where
+    - es.search(
     cleartext_transmission:
+    - smtplib.SMTP(
+    - ftplib.FTP(
+    - http.client.HTTPConnection(
     xpath_injection:
     - .xpath(
     - XPath(
