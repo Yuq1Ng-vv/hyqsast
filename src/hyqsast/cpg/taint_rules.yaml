@@ -2762,6 +2762,17 @@ java:
   - 'getResponseBodyAsString\s*\('
   - '\.getMessage\s*\('
   - 'MessageFormat\s*\.\s*format\s*\([^)]*getString'
+  # P1-5（2026-08-26）：泛方法名 `.update(`/`.insert(` 误标 sql_injection sink。
+  # ① MessageDigest/Mac 等加密摘要的 `.update(input)` 被 `.update(` 命中（OWASP 530 条
+  # findings 100% 是 md.update(input)——哈希输入不是 SQL 执行，sink 错定位在摘要更新
+  # 步骤，且哈希用例的弱哈希漏洞已由 insecure_hash 类别单独检测）。排除加密摘要接收者，
+  # 保留真 SQL `.update(`（MyBatis sqlSession/session/db 等，OWASP 无锚点但真实项目承重）。
+  - '\b(?:md|digest|messageDigest|MessageDigest|md5|sha\w*|hmac|mac)\.update\s*\('
+  # ② StringBuilder/StringBuffer.insert(offset, str) 是字符串构建，永不 SQL；排除后
+  # `.insert(` 只命中真 SQL/DB 接收者（sqlSession.insert(/db.insert(/contentResolver.insert(）。
+  # OWASP 与五基准均 0 锚点（删 0 findings），纯预防真实项目 FP。
+  - 'StringBuilder\.insert\s*\('
+  - 'StringBuffer\.insert\s*\('
   sources:
     command_injection:
     - request.getParameter(
