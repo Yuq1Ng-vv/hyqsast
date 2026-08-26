@@ -3356,7 +3356,6 @@ java:
     - CommandLine.parse(
     - CommandLine.addArgument(
     - DefaultExecutor.execute(
-    - Executor.execute(
     - GroovyShell.evaluate(
     - GroovyShell.run(
     - String.execute(
@@ -3366,11 +3365,8 @@ java:
     - PythonInterpreter.exec(
     - ScriptEngineManager.getEngineByName(
     - Invocable.invokeFunction(
-    - Execute(
     - Commandline
-    - ProcessExecutor
     - .exec(
-    - .command(
     xss:
     - .getWriter(
     - .getOutputStream(
@@ -3505,7 +3501,6 @@ java:
     - URL.getContent(
     - URLConnection.getInputStream(
     - URLConnection.connect(
-    - .connect(
     - HttpsURLConnection
     - HttpURLConnection
     - HttpClient.send(
@@ -3550,7 +3545,6 @@ java:
     - WebTarget.request(
     - Invocation.Builder.get(
     - Invocation.Builder.post(
-    - .target(
     - Retrofit.Builder
     - Unirest.get(
     - Unirest.post(
@@ -3565,6 +3559,8 @@ java:
     - .openStream(
     - .newCall(
     - new Socket(
+    - HttpURLConnection.connect(
+    - Socket.connect(
     deserialization:
     - ObjectInputStream.readObject(
     - ObjectInputStream.readUnshared(
@@ -3599,7 +3595,6 @@ java:
     - XStream.fromXML(
     - XStream
     - .fromXML(
-    - .toXML(
     - Kryo.readObject(
     - Kryo.readClassAndObject(
     - Kryo
@@ -3647,8 +3642,6 @@ java:
     - ServletRedirectAction
     - response.redirect(
     - .setHeader("Refresh"
-    - .redirect(
-    - .forward(
     - .setViewName(
     - .getRequestDispatcher(
     code_injection:
@@ -3774,7 +3767,6 @@ java:
     - XPathExpression.evaluate(
     - XPathFactory.newXPath(
     - SchemaFactory
-    - Validator
     - JAXBContext.newInstance(
     - Unmarshaller.unmarshal(
     - javax.xml.bind.Unmarshaller
@@ -3820,8 +3812,6 @@ java:
     - NamingManager.getObjectInstance(
     - DirectoryManager.getObjectInstance(
     - new InitialContext(
-    - .lookup(
-    - .lookupLink(
     ssti:
     - freemarker.template.Template
     - Template.process(
@@ -3857,7 +3847,6 @@ java:
     - .mergeTemplate(
     - .createTemplate(
     - TemplateEngine(
-    - .process(
     - Handlebars(
     # A 类收窄：``MethodExpression(`` / ``ValueExpression(`` / ``Expression(``
     # 裸类型名（audit 中 Expression( 300 命中全噪声，报告引擎的模板渲染调用；
@@ -3880,7 +3869,6 @@ java:
     - Cipher.getInstance("Blowfish"
     - Cipher.getInstance("AES/ECB"
     - Cipher.getInstance("AES/CBC/NoPadding"
-    - Random(
     - new Random(
     - Math.random(
     - java.util.Random
@@ -3889,11 +3877,8 @@ java:
     - SSLContext.getInstance("TLSv1.1"
     - SSLContext.getInstance("SSLv3"
     - IvParameterSpec
-    - GCMParameterSpec
     - SecureRandom.setSeed(
     - SecretKeySpec
-    - Cipher.getInstance(
-    - MessageDigest.getInstance(
     - SecretKeySpec(
     - DESKeySpec(
     - IvParameterSpec(
@@ -3971,12 +3956,6 @@ java:
     - log.log(
     - LOG.log(
     - LOGGER.log(
-    - .info(
-    - .debug(
-    - .warn(
-    - .error(
-    - .trace(
-    - .fatal(
     # 信任边界（CWE-501）：未校验的请求数据写入 HttpSession —— 会话被后续
     # 代码当作可信数据使用。精确到 getSession().setAttribute（避开
     # request.setAttribute 之类请求级属性，不制造信任边界误报）与
@@ -4178,13 +4157,8 @@ java:
     - ACCESS_EXTERNAL_DTD
     - setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA
     - FromXmlParser.Feature
-    - SAXBuilder.setFeature(
     - external-general-entities
-    - setFeature(
     - XmlMapper.disable(
-    - DocumentBuilderFactory.setFeature(
-    - SAXReader.setFeature(
-    - DocumentHelper
     - setProperty(XMLConstants.ACCESS_EXTERNAL_DTD
     - XMLInputFactory.SUPPORT_DTD
     - external-parameter-entities
