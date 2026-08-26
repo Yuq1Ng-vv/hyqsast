@@ -1794,16 +1794,9 @@ javascript:
     - cassandra.Client.eachRow(
     - cassandra.Client.execute(
     - client.query(
-    - collection.aggregate(
-    - collection.countDocuments(
-    - collection.distinct(
-    - collection.find(
-    - collection.findOne(
-    - collection.updateMany(
     - connection.query(
     - createConnection(
     - db.all(
-    - db.collection(
     - db.exec(
     - db.get(
     - db.pragma(
@@ -1837,23 +1830,6 @@ javascript:
     - knex.schema.raw(
     - knex.select(
     - knex.whereRaw(
-    - mongoose.Model.aggregate(
-    - mongoose.Model.countDocuments(
-    - mongoose.Model.deleteMany(
-    - mongoose.Model.deleteOne(
-    - mongoose.Model.distinct(
-    - mongoose.Model.find(
-    - mongoose.Model.findById(
-    - mongoose.Model.findByIdAndUpdate(
-    - mongoose.Model.findOne(
-    - mongoose.Model.findOneAndDelete(
-    - mongoose.Model.findOneAndRemove(
-    - mongoose.Model.findOneAndReplace(
-    - mongoose.Model.findOneAndUpdate(
-    - mongoose.Model.populate(
-    - mongoose.Model.updateMany(
-    - mongoose.Model.updateOne(
-    - mongoose.Model.where(
     - mssql.connect(
     - mssql.query(
     - mysql.createConnection(
@@ -1895,7 +1871,6 @@ javascript:
     - require('mysql2')
     - import 'mysql'
     - .whereRaw(
-    - $where
     - .findOne(
     - .findById(
     - .findOneAndUpdate(
@@ -2801,6 +2776,31 @@ javascript:
     - api_key
     hardcoded_secret:
     nosql_injection:
+    - collection.aggregate(
+    - collection.countDocuments(
+    - collection.distinct(
+    - collection.find(
+    - collection.findOne(
+    - collection.updateMany(
+    - db.collection(
+    - mongoose.Model.aggregate(
+    - mongoose.Model.countDocuments(
+    - mongoose.Model.deleteMany(
+    - mongoose.Model.deleteOne(
+    - mongoose.Model.distinct(
+    - mongoose.Model.find(
+    - mongoose.Model.findById(
+    - mongoose.Model.findByIdAndUpdate(
+    - mongoose.Model.findOne(
+    - mongoose.Model.findOneAndDelete(
+    - mongoose.Model.findOneAndRemove(
+    - mongoose.Model.findOneAndReplace(
+    - mongoose.Model.findOneAndUpdate(
+    - mongoose.Model.populate(
+    - mongoose.Model.updateMany(
+    - mongoose.Model.updateOne(
+    - mongoose.Model.where(
+    - $where
     format_string:
     log_injection:
     - console.log(
