@@ -225,7 +225,8 @@ python:
     - 'prepare('
     xss:
     - 'html.escape('
-    - 'escape('
+    # 裸 'escape(' 已删（2026-08-26，方向修正批）：子串匹配 html.unescape(/re.escape(，
+    # 解码还原/正则转义不是 HTML 净化，标成 sanitizer 会吞真实 XSS（FN）。限定名已覆盖真实 escape。
     - 'bleach.clean('
     - 'bleach.sanitize('
     command_injection:

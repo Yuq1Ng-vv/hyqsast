@@ -118,6 +118,7 @@ class Analyzer:
         rules_paths: str | Path | list[str | Path] | None = None,
         *,
         vuln_types: list[str] | None = None,
+        uncovered_sinks: bool = False,
         enable_container_bridge: bool = False,
         enable_state_bridge: bool = False,
         progress: Progress | None = None,
@@ -143,6 +144,9 @@ class Analyzer:
         # _apply_sink_allowlist 注释）——BFS 从所有 source 出发、sanitizer
         # 跨类别共享，过滤 source/sanitizer 会漏报/误伤。
         self.vuln_types = list(vuln_types) if vuln_types else None
+        # P0-2: uncovered_sink 盲区显式开关（默认关——真实项目噪声爆炸；
+        # 开启时把「无 taint_category 的危险调用」也列进盲区清单）
+        self.uncovered_sinks = uncovered_sinks
         # T2（对抗审查）: _source_files 结果缓存（directory/language init 后不变，
         # _extract_endpoints 与 _summarize 各调一次全目录 rglob，70k 文件浪费）。
         self._source_files_cache: list[str] | None = None
@@ -204,7 +208,11 @@ class Analyzer:
         # ETA 因无速度样本显示 -:--:--。盲区清单、汇总计数各单步。
         prog.begin("汇总")
         prog.stage("盲区清单")
-        blind_spots = self._build_blind_spots(endpoints) if self.include_blind_spots else []
+        blind_spots = (
+            self._build_blind_spots(endpoints, include_uncovered=self.uncovered_sinks)
+            if self.include_blind_spots
+            else []
+        )
         prog.set_total(1)
         prog.step(1)
         prog.stage("规范版报告")
@@ -1115,8 +1123,16 @@ class Analyzer:
 
     # ── 盲区 ────────────────────────────────────────────────────────────
 
-    def _build_blind_spots(self, endpoints: list[Endpoint]) -> list[BlindSpot]:
-        """枚举没有已知污点源的接口（IDOR / 业务逻辑复核候选）。"""
+    def _build_blind_spots(
+        self, endpoints: list[Endpoint], include_uncovered: bool = False
+    ) -> list[BlindSpot]:
+        """枚举没有已知污点源的接口 +（可选）未命名的危险调用（IDOR / 漏报排查候选）。
+
+        ``include_uncovered``（P0-2）：把 `find_uncovered_sinks` 找到的
+        「无 taint_category 的疑似调用」也列进盲区——显式开启，默认关
+        （真实项目会噪声爆炸）。盲区来源写在 reason 里，供漏报排查
+        （sink 规则没接住、或该调用确实没规则）。
+        """
         from hyqsast.cpg.discovery import SourceCompletenessChecker
 
         checker = SourceCompletenessChecker(self.graph_builder.graph, self.taint_loader)
@@ -1132,6 +1148,16 @@ class Analyzer:
                     recommendation="人工复核 IDOR / 业务逻辑漏洞",
                 )
             )
+        if include_uncovered:
+            for u in checker.find_uncovered_sinks(self.language):
+                spots.append(
+                    BlindSpot(
+                        kind="uncovered_sink",
+                        location=f"{u.file_path}:{u.line}",
+                        reason=f"未命名的危险调用 {u.expression!r}（无 taint_category）",
+                        recommendation="补充 sink 规则或人工复核该调用",
+                    )
+                )
         return spots
 
     @staticmethod

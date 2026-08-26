@@ -68,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
         help="不生成聚合规范版（默认写出 <stem>.canonical.agg.json，按 source+sink 聚合调用链）",
     )
     parser.add_argument("--no-blind-spots", action="store_true", help="不输出盲区清单")
+    parser.add_argument(
+        "--uncovered-sinks",
+        action="store_true",
+        help="显式开启「未命名的危险调用」盲区（默认关——真实项目噪声爆炸）",
+    )
     parser.add_argument("--no-cache", action="store_true", help="强制重建 CPG 图，忽略缓存")
     parser.add_argument(
         "--enable-container-bridge",
@@ -113,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             framework=args.framework,
             max_findings_per_category=args.max_findings,
             include_blind_spots=not args.no_blind_spots,
+            uncovered_sinks=args.uncovered_sinks,
             use_cache=not args.no_cache,
             rules_paths=rules_paths,
             vuln_types=vuln_types,

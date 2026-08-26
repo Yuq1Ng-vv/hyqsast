@@ -29,6 +29,7 @@ def scan(
     rules_paths: str | Path | list[str | Path] | None = None,
     *,
     vuln_types: list[str] | None = None,
+    uncovered_sinks: bool = False,
     enable_container_bridge: bool = False,
     enable_state_bridge: bool = False,
     progress: Progress | None = None,
@@ -48,6 +49,9 @@ def scan(
         vuln_types: 定向扫描的漏洞类别白名单（如 ``["sql_injection", "xss"]``）。
             只在规则加载层收窄 sink 类别，source 与 sanitizer 全保留（BFS 从所有
             source 出发、sanitizer 跨类别共享）。None = 全扫。
+        uncovered_sinks: 显式开启「未命名的危险调用」盲区（默认关，真实项目
+            噪声爆炸）。开启后 ``blind_spots`` 里多一类 ``uncovered_sink``，
+            供漏报排查（sink 规则没接住的调用）。
         enable_container_bridge: 开启「容器/Builder 状态写读桥接」启发式
             （默认关）。这是过近似：``sb.append(t); s = sb.toString()`` 这类
             链它才有边。默认关会牺牲该类别漏报面（A 类）的部分召回，见
@@ -70,6 +74,7 @@ def scan(
         severity_overrides=severity_overrides,
         rules_paths=rules_paths,
         vuln_types=vuln_types,
+        uncovered_sinks=uncovered_sinks,
         enable_container_bridge=enable_container_bridge,
         enable_state_bridge=enable_state_bridge,
         progress=progress,
