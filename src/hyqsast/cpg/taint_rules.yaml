@@ -3327,7 +3327,6 @@ java:
     - jt.update(
     - sqlSession.update(
     - session.update(
-    - Mapper.update(
     - .batchUpdate(
     - JdbcTemplate.update
     - JdbcTemplate.execute
@@ -3343,9 +3342,7 @@ java:
     # Hibernate session / MyBatis Mapper / Android contentResolver 接收者。
     - sqlSession.delete(
     - session.delete(
-    - Mapper.delete(
     - sqlSession.insert(
-    - Mapper.insert(
     - contentResolver.insert(
     - DSLContext.fetch(
     - DSLContext.execute(
@@ -3801,10 +3798,6 @@ java:
     - LSParser.parseWithContext(
     - WstxInputFactory
     - Stax2XMLInputFactory
-    - org.dom4j
-    - org.xml.sax
-    - javax.xml.parsers
-    - org.jdom2
     - Transformer(
     - .newDocumentBuilder(
     - .newSAXParser(
@@ -3939,7 +3932,6 @@ java:
     - .addIntHeader(
     - .setDateHeader(
     - .addDateHeader(
-    - .header(
     - .addCookie(
     injection_general:
     # P1-8：Class.forName(/.getMethod(/.invoke( 移除（反射族收窄，见 code_injection
