@@ -4241,9 +4241,11 @@ go:
     - os.Environ()
     - os.Args
     - os.Stdin
-    - os.ReadFile(
-    - ioutil.ReadFile(
-    - .Body
+    - r.Body
+    - req.Body
+    - request.Body
+    - c.Query(
+    - ctx.Query(
     info_disclosure:
     - runtime.Stack(
     - debug.Stack(
@@ -4298,7 +4300,6 @@ go:
     - template.HTMLAttr(
     - w.Write(
     - fmt.Fprintf(
-    - io.WriteString(
     command_injection:
     - exec.Command(
     - exec.CommandContext(
@@ -4343,21 +4344,12 @@ go:
     - http.ServeFile(
     - http.Dir(
     xxe:
-    - xml.Unmarshal(
-    - xml.NewDecoder(
-    - xml.NewTokenDecoder(
-    - .DecodeElement(
-    - .RawToken(
-    - .ParseString(
-    - .ParseReader(
     deserialization:
     - gob.NewDecoder(
     - .DecodeValue(
     - yaml.Unmarshal(
     - yaml.UnmarshalStrict(
     - yaml.NewDecoder(
-    - json.Unmarshal(
-    - json.NewDecoder(
     open_redirect:
     - http.Redirect(
     - http.RedirectHandler(
@@ -4374,12 +4366,14 @@ go:
     - fmt.Printf(
     - fmt.Println(
     - fmt.Print(
-    - fmt.Fprintf(
     - slog.Info(
     - slog.Error(
     - logrus.Infof(
     - logrus.Errorf(
     - logrus.WithField(
+    - logrus.Printf(
+    - logrus.Println(
+    - logrus.Print(
     crypto_weakness:
     - md5.Sum(
     - md5.New(
@@ -4391,20 +4385,14 @@ go:
     - md4.New(
     - ripemd160.New(
     - cipher.NewCBCEncrypter(
-    - InsecureSkipVerify
-    - InsecureCipherSuites(
-    - VersionSSL30
-    - VersionTLS10
-    - VersionTLS11
+    - rand.Intn(
+    - rand.Int(
+    - rand.Float64(
+    - rand.Uint32(
+    - rand.Read(
     info_disclosure:
     - http.Error(
-    - w.Write(
-    - fmt.Fprintf(
     auth_bypass:
-    - AuthCodeURL(
-    - http.SetCookie(
-    - SetCookie(
-    - HttpOnly
     xpath_injection:
     - .EvalXPath(
     - .FindOne(
@@ -4460,14 +4448,13 @@ php:
     - ->bind_param(
     - ->bindParam(
     - ->bindValue(
-    - filter_var(
-    - filter_input(
     - preg_quote(
     - intval(
     - (int)
     - ctype_digit(
     - is_numeric(
     - oci_bind_by_name(
+    - $wpdb->prepare(
     xss:
     - htmlspecialchars(
     - htmlentities(
@@ -4501,11 +4488,17 @@ php:
     - sqlite_query(
     - SQLite3::query(
     - ->Execute(
+    - $wpdb->get_results(
+    - $wpdb->get_row(
+    - $wpdb->get_var(
+    - $wpdb->get_col(
+    - DB::select(
+    - DB::raw(
+    - DB::statement(
+    - DB::unprepared(
     xss:
     - print(
     - printf(
-    - print_r(
-    - var_dump(
     - vprintf(
     - fprintf(
     - vfprintf(
@@ -4522,10 +4515,7 @@ php:
     - pcntl_exec(
     code_injection:
     - eval(
-    - assert(
     - create_function(
-    - preg_replace(
-    - mb_ereg_replace(
     - call_user_func(
     - call_user_func_array(
     - array_map(
@@ -4534,6 +4524,8 @@ php:
     deserialization:
     - unserialize(
     - ->unserialize(
+    - yaml_parse(
+    - yaml_parse_file(
     ssti:
     - twig->render(
     - Blade::render(
@@ -4543,15 +4535,15 @@ php:
     - ->fetch(
     - ->display(
     ssrf:
-    - file_get_contents(
     - curl_init(
     - curl_exec(
     - fsockopen(
-    - fopen(
     - stream_socket_client(
     - get_headers(
-    - file(
-    - readfile(
+    - ->request(
+    - wp_remote_get(
+    - wp_remote_post(
+    - wp_remote_request(
     path_traversal:
     - file_get_contents(
     - file_put_contents(
@@ -4567,6 +4559,7 @@ php:
     - copy(
     - filesize(
     - file_exists(
+    - move_uploaded_file(
     xxe:
     - simplexml_load_file(
     - simplexml_load_string(
@@ -4575,13 +4568,14 @@ php:
     - xml_parse(
     - XMLReader->read(
     - ->loadXML(
-    - ->load(
     - SimpleXML->load(
     open_redirect:
-    - 'Location:'
-    - 'location:'
     - wp_redirect(
     - ->redirect(
+    - 'header(''Location:'
+    - 'header("Location:'
+    - 'header(''location:'
+    - 'header("location:'
     header_injection:
     - header(
     - ->withHeader(
@@ -4593,20 +4587,16 @@ php:
     format_string:
     - sprintf(
     - vsprintf(
-    - printf(
-    - fprintf(
-    - vfprintf(
     crypto_weakness:
     - md5(
     - sha1(
     - crypt(
-    - base64_encode(
     - mcrypt_encrypt(
     - mcrypt_decrypt(
-    - openssl_encrypt(
-    - openssl_decrypt(
     - sha1_file(
     - md5_file(
+    - mt_rand(
+    - uniqid(
     info_disclosure:
     - phpinfo(
     - var_dump(
