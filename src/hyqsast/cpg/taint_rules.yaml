@@ -2762,17 +2762,9 @@ java:
   - 'getResponseBodyAsString\s*\('
   - '\.getMessage\s*\('
   - 'MessageFormat\s*\.\s*format\s*\([^)]*getString'
-  # P1-5（2026-08-26）：泛方法名 `.update(`/`.insert(` 误标 sql_injection sink。
-  # ① MessageDigest/Mac 等加密摘要的 `.update(input)` 被 `.update(` 命中（OWASP 530 条
-  # findings 100% 是 md.update(input)——哈希输入不是 SQL 执行，sink 错定位在摘要更新
-  # 步骤，且哈希用例的弱哈希漏洞已由 insecure_hash 类别单独检测）。排除加密摘要接收者，
-  # 保留真 SQL `.update(`（MyBatis sqlSession/session/db 等，OWASP 无锚点但真实项目承重）。
-  - '\b(?:md|digest|messageDigest|MessageDigest|md5|sha\w*|hmac|mac)\.update\s*\('
-  # ② StringBuilder/StringBuffer.insert(offset, str) 是字符串构建，永不 SQL；排除后
-  # `.insert(` 只命中真 SQL/DB 接收者（sqlSession.insert(/db.insert(/contentResolver.insert(）。
-  # OWASP 与五基准均 0 锚点（删 0 findings），纯预防真实项目 FP。
-  - 'StringBuilder\.insert\s*\('
-  - 'StringBuffer\.insert\s*\('
+  # P1-8（2026-08-26）：P1-5 的 md.update/StringBuilder.insert 排除已随本批次
+  # 移除——`.update(`/`.insert(` 已由裸模式收窄为接收者限定（sqlSession/update 等），
+  # MessageDigest/Signature/StringBuilder 等非 SQL 接收者天然不再命中，排除冗余。
   sources:
     command_injection:
     - request.getParameter(
@@ -2976,7 +2968,23 @@ java:
     sql_injection:
     - .executeQuery(
     - .executeUpdate(
-    - .execute(
+    - .executeQuery(
+    - .executeUpdate(
+    # P1-8（2026-08-26）太宽批次：裸 `.execute(` 在 700 万行项目命中
+    # Axis2/HttpClient/Executor 等 5000+ 非 SQL 调用。收窄为 JDBC/Spring 接收者
+    # 限定，OWASP 448 个真锚点（statement.execute×406 + JDBCtemplate.execute×42）
+    # 全部保留；非 SQL 接收者（executor/httpClient/command/scheduler 等）不再命中。
+    - statement.execute(
+    - stmt.execute(
+    - ps.execute(
+    - pstmt.execute(
+    - cstmt.execute(
+    - preparedStatement.execute(
+    - callableStatement.execute(
+    - jdbcTemplate.execute(
+    - jt.execute(
+    - JDBCtemplate.execute(
+    - .createStatement().execute(
     - .executeLargeUpdate(
     - .executeBatch(
     - .addBatch(
@@ -2988,7 +2996,8 @@ java:
     - PreparedStatement.execute(
     - DriverManager.getConnection(
     - DataSource.getConnection(
-    - Class.forName(
+    # P1-8：`Class.forName(` 是动态类加载，不是 SQL 执行——从 sql sinks 移除
+    #（code_injection/injection_general 同步移除，见代码注入段注释）。
     - .createStatement(
     - .prepareStatement(
     - .prepareCall(
@@ -3003,55 +3012,54 @@ java:
     - .getResultList(
     - .getSingleResult(
     - EntityManager.createNativeQuery(
-    - .query(
+    # P1-8：裸 `.query(` 命中通用 DAO/Reactive 查询（正常代码）。收窄为 Spring
+    # JdbcTemplate 接收者，OWASP 78 个真锚点（JDBCtemplate.query×78）保留。
+    - JDBCtemplate.query(
+    - jdbcTemplate.query(
+    - JdbcTemplate.query(
+    - jt.query(
     - .queryForList(
     - .queryForObject(
     - .queryForMap(
     - .queryForRowSet(
-    - .update(
+    # P1-8：裸 `.update(` 命中 MessageDigest/Signature 等非 SQL 更新。收窄为
+    # JdbcTemplate / MyBatis sqlSession / Hibernate session / MyBatis Mapper 接收者。
+    - jdbcTemplate.update(
+    - jt.update(
+    - sqlSession.update(
+    - session.update(
+    - Mapper.update(
     - .batchUpdate(
     - JdbcTemplate.update
     - JdbcTemplate.execute
     - NamedParameterJdbcTemplate.update(
     - NamedParameterJdbcTemplate.query(
-    - .getJdbcTemplate(
     - .selectOne(
     - .selectList(
     - .selectMap(
     - .selectCursor(
-    - .select(
-    - .delete(
-    - .insert(
-    - SqlSession.
+    # P1-8：裸 `.select(` 是 Reactive/LINQ/Stream 选择（非 SQL）；MyBatis 真 select
+    # 由 selectList/selectOne/selectMap/selectCursor 承担。裸 `.delete(`/`.insert(`
+    # 命中 File.delete/StringBuilder 等非 SQL——收窄为 MyBatis sqlSession /
+    # Hibernate session / MyBatis Mapper / Android contentResolver 接收者。
+    - sqlSession.delete(
+    - session.delete(
+    - Mapper.delete(
+    - sqlSession.insert(
+    - Mapper.insert(
+    - contentResolver.insert(
     - DSLContext.fetch(
     - DSLContext.execute(
     - DSLContext.executeQuery(
     - SQLiteDatabase.rawQuery(
     - SQLiteDatabase.execSQL(
-    - SQLExpressions
-    # A 类收窄 (误报面 A; BUG 42 的先例)：``String(`` 裸类型名被误标成
-    # sql_injection 的 FP 已被 BUG 42 移除。此处其余裸类型名（PreparedQuery( /
-    # Cursor( / List( / Query( / SqlRowSet( / ResultSet( / TypedQuery( / Object(）
-    # 经 perf_probes/a_pattern_audit.py 在 ureport2 上实证 100% 噪声——命中文本
-    # 全是类型实例化 / 强转 / 声明 / 方法名子串（getDataList( / new Object( 等），
-    # 真实 SQL sink（executeQuery / createQuery / queryForList / rawQuery 等）
-    # 已由上文精确模式覆盖，声明点兜底场景在这些模式上零召回价值；OWASP
-    # Benchmark testcode 亦无任何 TP 依赖（.getPath(/ResultSet(/Query< 等 grep 为零）。
-    # 按新铁律「能证明是误报就直接砍」删除。其余裸类型名（PreparedStatement( /
-    # Vector( / SQLiteStatement( 等）未经同类实证审计，按「未证明不动」保留。
-    - PreparedStatementCreator(
-    - BatchSql(
-    - Vector(
-    - PreparedStatement(
-    - ScalaAnorm(
-    - Future(
-    - SQLQuery(
-    - SQLiteStatement(
-    - Criterion(
-    - String;I)J(
-    - CallableStatement(
-    - SqlQueryResult(
-    - ParcelFileDescriptor(
+    # P1-8（2026-08-26）太宽批次：A 类裸类型名收窄延续——上次审计未动的一批
+    # 裸类型名（Future/Vector/PreparedStatement/CallableStatement/SQLQuery 等）
+    # 本批次按「OWASP 全量 0 锚点 + 命中全是类型实例化/强转/声明 + 真实 SQL sink
+    # 已由上文 executeQuery/createQuery/queryForList/rawQuery 等方法模式覆盖」
+    # 删除（承接 3032 行 A 类注释的审计逻辑）。`String;I)J(` 是 JVM 方法描述符
+    # 子串、`ParcelFileDescriptor(` 是 Android 类型名，均非 SQL 执行。
+    # `.getJdbcTemplate(` 同步移除——它是取模板的 getter 不是 SQL 执行。
     command_injection:
     - Runtime.exec(
     - Runtime.getRuntime().exec(
@@ -3110,7 +3118,9 @@ java:
     - ResponseBodyEmitter.send(
     - tag.ForHtmlTag.doTag(
     - io.PrintWriter.write(
-    - PrintWriter(
+    # P1-8：裸 `PrintWriter(` 是构造器（new PrintWriter(...)），构造目标流不是
+    # 内容输出——XSS 语义是 tainted 内容经 writer 写出，由 io.PrintWriter.write/
+    # print/println 与 jsp.JspWriter.* 承担。700 万行项目命中 152 处构造器全 FP。
     - jsp.JspWriter.print(
     # A 类收窄：``Html(`` 裸类型名只命中 ``escapeHtml(`` 等消毒器调用
     # （audit 40 命中全噪声）——把转义后的输出误标成 XSS sink，纯 FP。
@@ -3335,9 +3345,7 @@ java:
     - CompiledScript.eval(
     - Invocable.invokeMethod(
     - Invocable.invokeFunction(
-    - NashornScriptEngine
     - ScriptEngineManager.getEngineByName(
-    - javax.script.ScriptEngine
     - GroovyShell.evaluate(
     - GroovyShell.parse(
     - GroovyClassLoader.parseClass(
@@ -3359,9 +3367,7 @@ java:
     - MVEL.executeExpression(
     - JexlEngine.createExpression(
     - JexlExpression.evaluate(
-    - MapContext
     - SimpleCompiler.cook(
-    - ScriptEvaluator
     - ClassBodyEvaluator
     - ELProcessor.eval(
     - ELProcessor.getValue(
@@ -3371,15 +3377,19 @@ java:
     - PythonInterpreter.eval(
     - ScriptingContainer.runScriptlet(
     - TemplateRuntime.eval(
-    - Method.invoke(
     - Constructor.newInstance(
     - Field.set(
-    - Field.setAccessible(
-    - Class.forName(
-    - .getMethod(
-    # A 类收窄：``Object(`` 裸类型名（audit 66 命中全噪声，命中文本无一是
-    # 真实 code injection sink——真 sink 已由 ScriptEngine.eval( / parseExpression(
-    # 等精确模式覆盖）。
+    # P1-8（2026-08-26）太宽批次：反射族 sink 收窄——以下均非代码执行本身，
+    # 在 700 万行项目命中的全是框架/正常代码（反射是基础设施）：
+    #   Class.forName(  2689 动态类加载（CWE-470 弱 sink，真实执行由 newInstance 承担）
+    #   .getMethod(     2169 取 Method 对象（未执行）
+    #   Method.invoke(  157 只命中字面 `Method.` 接收者，真反射调用是 `m.invoke(`（接收者变量）
+    #   MapContext       69  JEXL 上下文构造
+    #   Field.setAccessible( 权限开关，命中每个 setAccessible(true)
+    #   NashornScriptEngine / javax.script.ScriptEngine / ScriptEvaluator 裸类型名
+    # 真实执行 sink 仍由 ScriptEngine.eval( / SpelExpressionParser.parseExpression( /
+    # Ognl.getValue( / MVEL.eval( / JexlEngine.createExpression( / Constructor.newInstance(
+    # 等承担。Class.forName→newInstance 链由 injection_general 保留的 .newInstance( 兜住。
     auth_bypass:
     - SecurityContext.getAuthentication(
     - SecurityContextHolder.getContext(
@@ -3544,7 +3554,10 @@ java:
     - XPathExpression.evaluate(
     - XPathFactory.newXPath(
     - .evaluate(
-    - .compile(
+    # P1-8：裸 `.compile(` 移除——编译本身不执行（OWASP 0 锚点，命中全被
+    # Pattern.compile(/ScriptEngine.compile( 等更长模式抢走）；XPath 注入的
+    # 执行端由 `.evaluate(` 承担，xpath.compile(...).evaluate(...) 链不丢。
+    # Pattern.compile( 的 ReDoS 由 injection_general 单独检测。
     ldap_injection:
     - DirContext.search(
     - InitialLdapContext(
@@ -3570,10 +3583,10 @@ java:
     - .addDateHeader(
     - .header(
     injection_general:
-    - Class.forName(
+    # P1-8：Class.forName(/.getMethod(/.invoke( 移除（反射族收窄，见 code_injection
+    # 段注释）；保留 .newInstance(（Class.forName→newInstance 链的执行端）、
+    # .getDeclaredMethod(/ .loadClass(（CWE-470 动态类加载的精确 API）。
     - .newInstance(
-    - .invoke(
-    - .getMethod(
     - .getDeclaredMethod(
     - .loadClass(
     log_injection:
@@ -3610,9 +3623,14 @@ java:
     # request.setAttribute 之类请求级属性，不制造信任边界误报）与
     # HttpSession 专用的 putValue。经 session 变量中转的调用（如
     # ``HttpSession s = ...; s.setAttribute(t)``）暂未覆盖，见漏报面清单。
+    # P1-8（2026-08-26）：裸 `putValue(` 在 700 万行项目命中 902 处非 HttpSession
+    # 的 putValue（config/map/工具类）——收窄到 getSession().putValue( 与
+    # HttpSession.putValue(。OWASP 173 个真锚点全部是 request.getSession().putValue(，
+    # getSession().putValue( 覆盖其全部；HttpSession.putValue( 补 session 变量中转形态。
     trust_boundary:
     - getSession().setAttribute(
-    - putValue(
+    - getSession().putValue(
+    - HttpSession.putValue(
     # Cookie 安全属性（CWE-614）：显式 setSecure(false) 使 cookie 可被
     # 明文 HTTP 携带。OWASP safe 用例用 setSecure(true)，不会命中。
     secure_cookie:
