@@ -1510,7 +1510,6 @@ javascript:
     - document.referrer
     - event.data
     - eventSource.onmessage
-    - fetch(.*).then(.*).text(
     - history.pushState(
     - history.state
     - localStorage.getItem(
@@ -2024,7 +2023,6 @@ javascript:
     - bypassSecurityTrustScript(
     - bypassSecurityTrustStyle(
     - bypassSecurityTrustUrl(
-    - callback(
     - createElement(
     - dangerouslySetInnerHTML
     - document.write(
@@ -2069,7 +2067,7 @@ javascript:
     - pug.compile(
     - pug.render(
     - pug.renderFile(
-    - puppeteer.page.pdf(
+    - page.pdf(
     - res.end(
     - res.format(
     - res.json(
@@ -2326,7 +2324,6 @@ javascript:
     - http.request(
     - https.get(
     - https.request(
-    - import(
     - io(
     - io.connect(
     - ioredis(
@@ -2415,13 +2412,11 @@ javascript:
     - XMLHttpRequest
     deserialization:
     - .deserializeBinary(
-    - .set(
     - '@msgpack/msgpack.decode('
     - BSON.deserialize(
     - Function(
     - Hoek.merge(
     - JSON5.parse(
-    - Object.assign(
     - Object.create(
     - _.defaultsDeep(
     - _.extend(
@@ -2444,7 +2439,6 @@ javascript:
     - deep-extend(
     - dotProp.set(
     - eval(
-    - extend(
     - funcster(
     - graphql.buildClientSchema(
     - graphql.buildSchema(
@@ -2460,7 +2454,6 @@ javascript:
     - jwt.decode(
     - lodash.merge(
     - lodash.set(
-    - merge(
     - mixin(
     - msgpack.decode(
     - msgpack.unpack(
@@ -2482,8 +2475,6 @@ javascript:
     - thrift.TFramedTransport(
     - thrift.createClient(
     - thrift.createHttpClient(
-    - url.format(
-    - url.parse(
     - vm.Script(
     - vm.compileFunction(
     - vm.createContext(
@@ -2498,6 +2489,7 @@ javascript:
     - loadAll(
     - unserialize(
     - deserialize(
+    - angular.merge(
     open_redirect:
     - '''<meta http-equiv="refresh"'
     - '<Navigate '
@@ -2575,9 +2567,6 @@ javascript:
     - page.evaluateHandle(
     - safe-eval(
     - safeEval(
-    - setImmediate(
-    - setInterval(
-    - setTimeout(
     - spawn(
     - static-eval(
     - vm.Script(
@@ -2603,7 +2592,6 @@ javascript:
     - '@clerk/express'
     - '@clerk/nextjs'
     - '@hapi/iron.'
-    - Auth(
     - AuthGuard(
     - GqlAuthGuard(
     - JwtAuthGuard(
@@ -2627,7 +2615,6 @@ javascript:
     - clerk.
     - clerkClient.
     - cookie-session(
-    - createClient(
     - crypto.createHmac(
     - crypto.timingSafeEqual(
     - ensureAuth(
@@ -2700,8 +2687,6 @@ javascript:
     - libxmljs2.parseXml(
     - node-expat.Parser(
     - node-expat.createParser(
-    - req.xml
-    - request.xml
     - sax.createStream(
     - sax.parser(
     - saxes(
@@ -2720,7 +2705,6 @@ javascript:
     - parseString(
     - parseXml(
     - parseXmlString(
-    - parseFromString(
     - SAXParser(
     - XMLParser(
     - xml2json(
@@ -2865,7 +2849,6 @@ javascript:
     - Model.findByPk(
     - PreparedStatement
     - Number(
-    - knex.raw(.*\?)
     - sql.identifier(
     - .escapeId(
     command_injection:
@@ -2914,12 +2897,8 @@ javascript:
     - filenamify.path(
     - valid-filename(
     - validFilename(
-    - path.resolve(
-    - path.normalize(
-    - path.join(
     ssrf:
     - cidr-regex(
-    - dns.resolve(.*{.*family.*})
     - ip-address.
     - ipaddr.js.
     - is-ip(
@@ -2928,7 +2907,6 @@ javascript:
     - net.isIP(
     - net.isIPv4(
     - net.isIPv6(
-    - new URL(
     - private-ip(
     - ssrf-filter(
     - ssrfGuard(
@@ -2982,10 +2960,6 @@ javascript:
     - csrf(
     - csurf(
     xxe:
-    - 'fast-xml-parser(.*processEntities: false'
-    - 'libxmljs.parseXml(.*noent: false'
-    - 'libxmljs.parseXml(.*nonet: true'
-    - xmldom.DOMParser(.*errorHandler
     ssti:
     - DOMPurify(
     - DOMPurify.sanitize(
@@ -3015,8 +2989,6 @@ javascript:
     - csprng(
     - scrypt.hash(
     - scrypt.verify(
-    - tls.createSecureContext(.*TLSv1_2
-    - tls.createSecureContext(.*TLSv1_3
 java:
   sink_excludes:
   - '\.toString\s*\('
