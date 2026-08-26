@@ -89,7 +89,8 @@
   edge_type=PATTERN，单步调用链），放在多类别聚合之后追加避免误合并。
   **关键设计决策**：不用 crypto_weakness 当 pattern 型（其 sinks 含
   `getInstance(、` `Random(` 等宽模式，会命中 SHA-256 / SecureRandom 等强算法，
-  FP 爆炸，且会被 `rules/` 的 CodeQL 适配层再放大），而是新建**精确专用类别**
+  FP 爆炸，且会被 `rules/` 原 CodeQL 适配层再放大（该层 2026-08 已审计 fold 进
+  内置并删除——宽模式现在直接在总库里），而是新建**精确专用类别**
   `insecure_hash`（硬编码弱算法精确子串）/ `weak_randomness`（`java.util.Random`
   / `Math.random` / `new Random(`，避开 `SecureRandom()` 子串碰撞）/
   `secure_cookie`（`setSecure(false)`）标记 pattern 型；`trust_boundary`
@@ -265,9 +266,11 @@
   桥接开启再 +30）——**裸模式是真实代码 FP 主力**。收紧 `List(` → 带限定符的
   `.getResultList(` 等、`.insert(` 同理，几乎肯定不伤 OWASP 真 TP（OWASP sqli sink
   都是 `executeQuery/executeUpdate` 类），待回归验证后落地；或迁到 codeql 专用
-  区块由 `rules/` 接管。
+  区块（2026-08 审查已把原 rules/ 适配规则 fold 进内置 taint_rules.yaml，此路已通，
+  但已 fold 的模式同样要过 A/B 闸门再收窄）。
 - **多语言冒烟矩阵**：python / javascript / go / php 各写一个最小样例跑通
-  `scan()`（go/php 引擎适配器未实现，规则已备好在 `rules/go.yaml`、`rules/php.yaml`）。
+  `scan()`（go/php 引擎适配器未实现，规则已备好在 `taint_rules.yaml` 的 go/php 区块，
+  2026-08 审查已 fold 进内置）。
 
 ## 漏报面清单（FN surfaces，2026-08 全量排查）
 
@@ -364,8 +367,9 @@ RHS→LHS / var_ref→call_site 按「location 字符串」精确对齐：跨行
 
 ### I. 多语言缺口（⚙️ languages/__init__.py）
 
-Go / PHP 引擎适配器未实现（规则已备在 `rules/go.yaml`、`rules/php.yaml`）——
-整个语言扫不出来；`_detect_language` 自动探测只取主语言，混合语言项目漏扫。
+Go / PHP 引擎适配器未实现（规则已备在 `taint_rules.yaml` 的 go/php 区块，
+2026-08 审查已 fold 进内置）——整个语言扫不出来；`_detect_language` 自动探测
+只取主语言，混合语言项目漏扫。
 
 ### J. 跨函数静态/全局/实例字段状态 —— ✅ 已修复（2026-08-20）
 
@@ -405,9 +409,9 @@ BFS 旧实现**命中 sink 即终止路径**——中间节点被过宽规则误
   **不要**为了抓它把 `getInstance(` 加进 pattern 型类别 —— 那会把 SHA-256/
   SHA-384 强算法全报（FP 爆炸）。正确做法是配置侧分析（见 P2「配置类漏洞」）。
 - **`crypto_weakness` 永不可标为 pattern 型**：其 sinks 含宽模式
-  （`getInstance(、` `Random(` 等）+ `rules/` CodeQL 适配层的
-  `Cipher.getInstance(` / `MessageDigest.getInstance(`，一旦无条件产出，
-  任何强算法/强随机数使用全报。它保持 taint 型（有 source 流入才产出）。
+  （`getInstance(、` `Random(` 等；原 `rules/` CodeQL 适配层的
+  `Cipher.getInstance(` / `MessageDigest.getInstance(` 已 fold 进内置，宽面只增不减），
+  一旦无条件产出，任何强算法/强随机数使用全报。它保持 taint 型（有 source 流入才产出）。
 - **大小写敏感**：`pat in text`。`getInstance("md5"` 等小写变体已补，
   但任意大小写混排（`"Md5"`）仍漏 —— 子串匹配的固有边界，别指望穷举。
 - **间接会话访问**：`trust_boundary` 只认 `getSession().setAttribute(` /

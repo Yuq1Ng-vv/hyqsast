@@ -6,7 +6,8 @@
 ## 运行
 
 ```bash
-# 在仓库根目录执行（会自动加载 rules/ 额外规则）
+# 在仓库根目录执行（rules/ 现有适配规则已 fold 进内置 taint_rules.yaml，
+# 无额外规则时也照常跑）
 uv run hyqsast examples/demo-java --language java -o report.json
 
 # 输出：report.json + report.canonical.json（规范版，人工复核用）

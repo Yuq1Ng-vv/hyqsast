@@ -121,23 +121,26 @@ enable_state_bridge?, rules_paths?, output_dir?)` 扫描并返回
 ## 自定义规则库
 
 规则库在 `src/hyqsast/cpg/taint_rules.yaml`。可以不改这个大文件，用**额外规则
-文件**（或目录）在它之上追加合并——适合批量适配 CodeQL 规则等场景：
+文件**（或目录）在它之上追加合并：
 
 ```bash
 # 仓库根目录下存在 rules/ 时自动加载（零配置）；--rules 可显式覆盖
 uv run hyqsast /path/to/project --language java -o report.json
-uv run hyqsast /path/to/project --language java --rules rules/fastjson.yaml --rules rules/ -o report.json
+uv run hyqsast /path/to/project --language java --rules my-rules/fastjson.yaml --rules my-rules/ -o report.json
 ```
 
 ```python
-result = scan("/path/to/project", language="java", rules_paths=["rules/fastjson.yaml"])
+result = scan("/path/to/project", language="java", rules_paths=["my-rules/fastjson.yaml"])
 ```
 
 - 额外文件结构与内置 YAML 一致：`语言 → {sources, sinks, sanitizers, sink_excludes}`；
   `sources/sinks/sanitizers` 是**子串**列表，`sink_excludes` 是**正则**。
 - 合并语义：按 `(语言, 区块, 类别)` **追加去重**，不覆盖内置规则。
-- 模板与 CodeQL 适配契约见 `examples/rules/`（`example.rules.yaml` + `README.md`）；
-  你的适配规则放仓库根目录 `rules/`（自动加载，契约见 `rules/README.md`）。
+- 模板与 CodeQL 适配契约见 `examples/rules/`（`example.rules.yaml` + `README.md`）。
+- 2026-08 曾有一批 5 语言的 CodeQL 适配规则放在仓库根目录 `rules/*.yaml`，经多 agent
+  审查后已**审计并 fold 进内置 `taint_rules.yaml`**（见 `docs/规则库审查报告-2026-08.md`），
+  文件已删除。现在 `rules/` 只作**可选覆盖目录**保留：放新适配规则进去即可自动加载
+  （契约见 `rules/README.md`），不放则零影响。
 
 ## 过近似桥接启发式开关（BUG 55/56）
 

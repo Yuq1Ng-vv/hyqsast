@@ -200,11 +200,12 @@ def scan_per_file(
     每文件小图用完即弃，内存有界（每文件 ~0.2s，2740 文件约 10 分钟）。
 
     规则加载与 CLI 保持一致：cli.py 会在 cwd 存在 ``rules/`` 目录时自动加载
-    （叠加在内置 ``taint_rules.yaml`` 之上）。这里复刻同样的自动发现，否则
-    per-file 与 chunk 整体扫描的 sink 标签不一致（如 ``.exec(`` 的 cmdi 模式
-    只在 rules/java.yaml，漏加载会让 exec@78 只标 path_traversal 而非
-    command_injection）。桥接开关与 ``--enable-container-bridge`` /
-    ``--enable-state-bridge`` 透传一致（A/B 用）。
+    （叠加在内置 ``taint_rules.yaml`` 之上，2026-08 起 rules/ 已空——原 5 语言
+    CodeQL 适配规则已审计 fold 进内置，见 docs/规则库审查报告）。这里复刻同样
+    的自动发现，否则 per-file 与 chunk 整体扫描的 sink 标签会不一致（历史实证：
+    2026-08-22 前 ``.exec(`` 的 cmdi 模式只在 rules/java.yaml，漏加载会让
+    exec@78 只标 path_traversal 而非 command_injection）。桥接开关与
+    ``--enable-container-bridge`` / ``--enable-state-bridge`` 透传一致（A/B 用）。
     """
     from hyqsast.api import scan
 
