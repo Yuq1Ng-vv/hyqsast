@@ -25,6 +25,12 @@ examples/Real-Vuln-Benchmark/
 # OWASP 分块扫描产物（65MB+ JSON 报告，可经 benchmarks/owasp/ 重新生成）
 benchmarks/owasp/results/
 
+# xAST Benchmark 扫描产物（可经 benchmarks/ant/ 重新生成）
+benchmarks/ant/results/
+
+# xAST Benchmark 源码（第三方基准，已含独立 .git，不入库）
+benchmarks/ant-application-security-testing-benchmark/
+
 # OWASP Benchmark 源码（第三方基准，chunk_scan.py 首次运行自动 clone，不入库）
 benchmarks/owasp-benchmark/
 
