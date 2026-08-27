@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -92,6 +93,14 @@ class TaintRuleLoader:
             if isinstance(ld, dict)
         }
         self._apply_sink_allowlist()
+        # 规则缓存：``_data`` 在 __init__ 之后不可变（allowlist 已就地收窄），
+        # ``rules_for`` 是纯只读构建。热路径上每个污点节点匹配都重建全部
+        # TaintCategory（perfprobe4 实测 22800 次调用，占建图 ~30%），缓存为
+        # 「每语言一次构建、之后 O(1) 复用」。调用方（analyzer/query/graph）
+        # 均只读迭代，无变异，缓存安全。
+        self._rules_cache: dict[str, LanguageTaintRules] = {}
+        self._sink_excludes_cache: dict[str, list[str]] = {}
+        self._sink_exclude_regex_cache: dict[str, list[re.Pattern]] = {}
 
     @staticmethod
     def _resolve_paths(rules_paths: str | Path | list[str | Path]) -> list[Path]:
@@ -255,7 +264,14 @@ class TaintRuleLoader:
                             logger.info("%s.%s.%s is empty", lang, section, cat_name)
 
     def rules_for(self, language: str) -> LanguageTaintRules:
-        """Return all taint rules for *language*."""
+        """Return all taint rules for *language*.
+
+        结果按语言缓存（``_data`` 在 __init__ 后不可变，纯只读构建）。热路径上
+        每节点匹配都调用本函数，未缓存时每调用重建全部 TaintCategory 对象。
+        """
+        cached = self._rules_cache.get(language)
+        if cached is not None:
+            return cached
         lang_data = self._data.get(language, {})
         categories: dict[str, TaintCategory] = {}
 
@@ -277,7 +293,9 @@ class TaintRuleLoader:
                 sanitizers=list(sanitizers_data),
             )
 
-        return LanguageTaintRules(language=language, categories=categories)
+        rules = LanguageTaintRules(language=language, categories=categories)
+        self._rules_cache[language] = rules
+        return rules
 
     def all_sources(self, language: str) -> list[str]:
         """Return all source patterns for *language* (flat list)."""
@@ -303,9 +321,34 @@ class TaintRuleLoader:
         injection points.  Callers match them against a candidate sink's source
         text and drop the sink label when they match.
         """
+        cached = self._sink_excludes_cache.get(language)
+        if cached is not None:
+            return cached
         lang_data = self._data.get(language, {})
         excludes = lang_data.get("sink_excludes", [])
-        return list(excludes) if isinstance(excludes, list) else []
+        out = list(excludes) if isinstance(excludes, list) else []
+        self._sink_excludes_cache[language] = out
+        return out
+
+    def sink_exclude_regexes(self, language: str) -> list[re.Pattern]:
+        """``sink_excludes`` 的预编译正则（每语言一次，热路径复用）。
+
+        graph.py 的 sink 排除在命中 sink 的每个节点上调用 ``re.search(pat,
+        text)``——未编译时每个模式每节点现编译一次（正则编译是纯 CPU 热点）。
+        无效模式在编译期跳过（与 ``_matches_sink_exclude`` 的 ``re.error``
+        捕获行为一致），语义不变。
+        """
+        cached = self._sink_exclude_regex_cache.get(language)
+        if cached is not None:
+            return cached
+        compiled: list[re.Pattern] = []
+        for pat in self.sink_excludes(language):
+            try:
+                compiled.append(re.compile(pat))
+            except re.error:
+                continue
+        self._sink_exclude_regex_cache[language] = compiled
+        return compiled
 
     def pattern_categories(self, language: str) -> set[str]:
         """返回 *language* 的「非污点流 pattern 型」sink 类别集合。

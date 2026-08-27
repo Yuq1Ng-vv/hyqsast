@@ -214,11 +214,14 @@ def _extract_signature(fn_node: object, source: str) -> str:
     return source[:brace_idx].rstrip() if brace_idx != -1 else source
 
 
-def _matches_sink_exclude(text: str, patterns: list[str]) -> bool:
+def _matches_sink_exclude(text: str, patterns: list[str] | list[re.Pattern]) -> bool:
     """Return True if *text* matches any sink-exclusion regex *pattern*.
 
     Exclusion patterns are user-supplied regexes (from ``sink_excludes`` in
     taint_rules.yaml).  Invalid patterns are skipped rather than raising.
+    ``patterns`` 通常是 taint_loader 预编译的正则（``sink_exclude_regexes``，
+    每语言编译一次复用），也兼容裸字符串（保持旧调用方行为）。``re.search``
+    对已编译 ``re.Pattern`` 与 ``str`` 都接受。
     """
     for pat in patterns:
         try:
@@ -1870,8 +1873,16 @@ class CPGGraphBuilder:
                 # (``toString()``, ``I18nUtil.getString``, exception
                 # ``getMessage()`` …) contain sink substrings but are not
                 # injection points — drop them before labeling.
-                excludes = getattr(self._taint_loader, "sink_excludes", None)
-                exclude_patterns = excludes(language) if callable(excludes) else []
+                # 预编译正则每语言一次（sink_exclude_regexes 缓存），避免命中
+                # sink 的每个节点都现编译整组排除模式；非本类 loader（mock /
+                # 外部子类）缺新方法时回退旧的 sink_excludes 字符串模式，
+                # _matches_sink_exclude 兼容两者。
+                excludes = getattr(self._taint_loader, "sink_exclude_regexes", None)
+                if callable(excludes):
+                    exclude_patterns = excludes(language)
+                else:
+                    excludes = getattr(self._taint_loader, "sink_excludes", None)
+                    exclude_patterns = excludes(language) if callable(excludes) else []
                 if exclude_patterns and _matches_sink_exclude(source_text, exclude_patterns):
                     continue
                 data["taint_sink"] = ",".join(sink_cats)
