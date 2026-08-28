@@ -346,6 +346,18 @@ def main() -> None:
 
     print(f"[chunk_scan] {len(files)} 文件 / {args.chunks} 块 -> {out_dir}")
 
+    # BUG (2026-08-28): 此前 main() 打印完头部就 return，分块路径从不调用
+    # scan_chunks —— `chunk_scan.py` 默认静默空跑、退出 0 伪装成功（结果目录
+    # 是空的，评分无从谈起）。补齐 scan_chunks → merge → score 三步，与
+    # --per-file 分支同构。每块一个子进程建图（内存有界），是 1.6GiB 机器上
+    # 全量 2740 文件 OOM 的唯一安全路径。
+    reports = scan_chunks(files, out_dir, args.chunks, args.max_findings)
+    merged_json = out_dir / "owasp-merged.json"
+    merge(reports, merged_json)
+    if not args.scan_only:
+        score(merged_json, EXPECTED, out_dir / "score.txt")
+        print(f"[chunk_scan] 评分已存档：{out_dir / 'score.txt'}")
+
 
 if __name__ == "__main__":
     main()
