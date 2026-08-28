@@ -1,4 +1,4 @@
-"""benchmarks/baseline_snapshot.py — 五基准 A/B 快照/比对工具。
+"""benchmarks/baseline_snapshot.py — 回归基准 A/B 快照/比对工具。
 
 用法::
 
@@ -8,9 +8,15 @@
     # 改动后再快照 AFTER，并与 BEFORE 比对（A/B 零丢失检查）
     uv run python benchmarks/baseline_snapshot.py compare /tmp/baseline_before /tmp/baseline_after
 
-快照内容：每个基准项目的 canonical finding 键集合
+快照内容：每个基准项目的 finding 键集合
 ``(vuln_type, source.file:line, sink.file:line)``，存为 ``{proj}.keys.txt``
 （BEFORE 的每一条键必须在 AFTER 里出现，才叫「原有命中一条不少」）。
+
+基准清单见 BASELINES：四个真实项目 + sast-java（xAST Benchmark，见
+``benchmarks/ant/``）+ 两个探针。两个关键约束：
+- **``--max-findings 50000``**：sast-java 默认每类别 50 会把稠密类别（如
+  command_injection）截断成假 FN（实测 TPR 72.8%→13.0%），必须给高。
+- **``--no-cache``**：回归门必须全量重建图，防止 stale 缓存掩盖真实回归。
 """
 
 from __future__ import annotations
@@ -23,11 +29,15 @@ from pathlib import Path
 ROOT = Path("/root/hyqhuman")
 
 # (项目名, 路径, 语言)
+# sast-java 路径与 benchmarks/ant/run.py 的 ANT_BENCH / lang_dir 一致；
+# ant 基准另有打分口径（TPR/FPR，见 benchmarks/ant/run.py），这里只做
+# finding 键集合的 A/B 零丢失回归门。
 BASELINES = [
     ("vfa", "examples/Real-Vuln-Benchmark/repos/realvuln-vulnerable-flask-app", "python"),
     ("flask-xss", "examples/Real-Vuln-Benchmark/repos/realvuln-flask-xss", "python"),
     ("vampi", "examples/Real-Vuln-Benchmark/repos/realvuln-vampi", "python"),
     ("demo-java", "examples/demo-java", "java"),
+    ("sast-java", "benchmarks/ant-application-security-testing-benchmark/sast-java", "java"),
     ("probe-python", "/tmp/bridge_sample", "python"),
     ("probe-java", "/tmp/rules_probe", "java"),
 ]
@@ -42,14 +52,15 @@ def _scan(proj: str, path: str, language: str, out_dir: Path) -> list[str]:
         str(ROOT / path if not path.startswith("/") else path),
         "--language",
         language,
+        "--max-findings",
+        "50000",  # 铁律：默认每类别 50 会把 sast-java 稠密类别截断成假 FN
+        "--no-cache",  # 回归门全量重建，防 stale 缓存掩盖真实回归
         "-o",
         str(report),
         "--no-canonical",
         "--no-elements",
     ]
-    if language == "python":
-        cmd += ["--no-cache"]  # 探针等小项目避免 stale 缓存
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=900)
     if r.returncode != 0:
         print(f"[{proj}] 扫描失败 rc={r.returncode}: {r.stderr[-500:]}")
         return []
