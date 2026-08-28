@@ -27,6 +27,14 @@
 - finding 层仍有 28 条假/弱 FP 噪声（不影响 TP 计数）：4 条 ssrf 命中 cmdi 用例的
   ``HttpUtil.doGet("www.test.com")`` 常量实参（infix 表达式污染外溢）；24 条
   info_disclosure 命中 SSRF facade 用例的 ``println/printStackTrace(HTTP响应体)``。
+
+2026-08-28 更新（results/2026-08-28-bug65，BUG 65）：
+- 常量实参 ssrf 假阳性已修（``_add_cross_function_edges`` 只桥「名字出现在本调用
+  实参里」的 var_ref，commit 见 git log）。sast-java 上 8 条该型 finding 全部移除
+  （4 个 infix 用例 × 2 个 HttpUtil sink 行），TP/FN/FP/TN 逐项不变，vfa/flask-xss/
+  vampi/demo-java 零丢失。
+- 剩余 finding 层噪声：24 条 info_disclosure（SSRF facade 用例打印 HTTP 响应体，
+  ``println/printStackTrace`` 宽 sink 误标，未修）。
 """
 
 from __future__ import annotations
@@ -71,7 +79,8 @@ def check(report_path: Path) -> None:
     # ── 1. 跨用例污染 ──
     cross = []
     for f in findings:
-        sc, kc = case_of(f["source"]["file_path"], all_cases), case_of(f["sink"]["file_path"], all_cases)
+        sc = case_of(f["source"]["file_path"], all_cases)
+        kc = case_of(f["sink"]["file_path"], all_cases)
         if sc and kc and sc != kc:
             cross.append((sc, kc, f["vuln_type"]))
     print(f"[1] 跨用例污染（X 用例 source -> Y 用例 sink）: {len(cross)}")
@@ -80,7 +89,8 @@ def check(report_path: Path) -> None:
     tp_hits: dict[str, list] = defaultdict(list)
     no_midstep, no_sink_var = [], []
     for f in findings:
-        sc, kc = case_of(f["source"]["file_path"], all_cases), case_of(f["sink"]["file_path"], all_cases)
+        sc = case_of(f["source"]["file_path"], all_cases)
+        kc = case_of(f["sink"]["file_path"], all_cases)
         c = sc if sc in true_cases else (kc if kc in true_cases else None)
         if not c:
             continue
@@ -123,7 +133,9 @@ def check(report_path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="核查 ant sast-java 报告 TP 真伪")
-    ap.add_argument("report", nargs="?", default=None, help="report.json 路径（默认取 results/ 最新归档）")
+    ap.add_argument(
+        "report", nargs="?", default=None, help="report.json 路径（默认取 results/ 最新归档）"
+    )
     args = ap.parse_args()
     if args.report:
         check(Path(args.report))

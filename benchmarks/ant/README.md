@@ -69,7 +69,29 @@ sink 的巨型连通块）。在 sast-java 上的效果：
 - **净效果是质量提升**：错误判 TP 变 FN 是「打假」不是漏真；FP 减少 5 条。
   默认路径（vfa/flask-xss/vampi/demo-java + OWASP）finding 键零丢失验证通过。
 
-## 当前基线（2026-08-28-bug64，sast-java，无截断）
+## BUG 65 影响（2026-08-28，整行 var_ref 过度桥接收窄）
+
+`src/hyqsast/cpg/graph.py` 的 `_add_cross_function_edges` 把调用行**所有**
+var_ref 桥到每个已解析 call_site，改为只桥「名字出现在本调用实参全集里」的
+var_ref（实参为空时退回原行为）。修复 `cmd + HttpUtil.doGet("www.test.com")`
+的 infix 外溢：cmd 是外层 run 的实参（infix 表达式），却被整行桥进内层 doGet
+call_site（其真实实参是硬编码常量）→ 假 ssrf。在 sast-java 上的效果：
+
+```
+                    findings   TP    FP    TPR      FPR
+2026-08-27-first-run    447   174    90   72.8%    36.6%   (BUG 64 前)
+2026-08-28-bug64        357   173    85   72.4%    34.6%   (BUG 64 后)
+2026-08-28-bug65        349   173    85   72.4%    34.6%   (BUG 65 后)
+```
+
+- **8 条 findings 被移除** = 4 个 infix 表达式用例 × 2 条 HttpUtil 常量实参
+  ssrf（sink 在 `HttpUtil.java:25/40`，URL 是硬编码常量，非攻击者可控）。
+  打分格逐项不变（TP/FN/FP/TN 全同），仅 finding 层噪声减少；vfa/flask-xss/
+  vampi/demo-java + 探针 finding 键零丢失。
+- 已用 check_tp.py 逐条核验这 8 条为真 FP（用例实测是 cmdi：`CmdUtil.run(
+  cmd + doGet("常量"))`，评测维度「参数/返回值传递」）。
+
+## 当前基线（2026-08-28-bug65，sast-java，无截断）
 
 ```
 TP=173  FN=66  FP=85  TN=161

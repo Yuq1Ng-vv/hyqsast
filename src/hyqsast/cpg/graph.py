@@ -1212,7 +1212,19 @@ class CPGGraphBuilder:
             # BFS 断链（漏报）。name/positional 直连只覆盖了首个目标的形参，
             # 其余目标靠这条 call_site → function 边 + function → param 桥保持
             # 可达（铁律：过近似，保证不漏报）。
+            # BUG 65：只桥接「名字出现在本调用实参全集里」的 var_ref。旧实现把
+            # 调用行**所有** var_ref 桥到每个已解析 call_site——嵌套/同行兄弟
+            # 调用共享同一行，``cmd + HttpUtil.doGet("www.test.com")`` 中 cmd 是
+            # 外层 run 的实参（infix 表达式），却被整行桥进内层 doGet call_site
+            # （其真实实参是常量）→ 假 ssrf（常量实参被 infix 左侧污染外溢）。
+            # 实参全集非空时用 ``_word_in_text(vname, args_joined)`` 过滤；为空
+            # （零参调用 / 实参解析缺失）退回原整行桥接保持召回。
+            args_joined = " ".join(call_args) if call_args else ""
             for arg_vid in caller_var_refs:
+                if args_joined and not _word_in_text(
+                    self.graph.nodes[arg_vid].get("var_name", ""), args_joined
+                ):
+                    continue
                 self.graph.add_edge(arg_vid, nid, edge_type=EDGE_DATA_FLOW)
                 for cfid in callee_fids:
                     self.graph.add_edge(nid, cfid, edge_type=EDGE_DATA_FLOW)
