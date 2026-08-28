@@ -1217,12 +1217,20 @@ class CPGGraphBuilder:
                 for cfid in callee_fids:
                     self.graph.add_edge(nid, cfid, edge_type=EDGE_DATA_FLOW)
 
-            # Return value: connect callee_function → caller's assignment
-            # at the call line (approximates "callee return → caller result")
+            # Return value: connect call_site → caller's assignment at the call
+            # line (approximates "callee return → caller result").
+            # BUG 64: 从共享 callee function 节点改到本调用点 call_site 节点。旧边
+            # ``function → 每个调用方的赋值`` 把同一 callee 的所有调用点结果变量
+            # 连进一个共享区——一个 source 达 callee 后浪进全部调用方的赋值 →
+            # 巨型连通块（BFS O(S×共享区)，蝴蝶结探针 source 达全部 2000 个
+            # 跨文件 sink）。call_site 是每次调用自己的节点，连回**本调用行**的
+            # 赋值：返回值语义等价（该调用产生的结果流入本行变量），但 taint
+            # 从 X 文件进、只在 X 文件的调用点出，不再跨调用方污染。真实路径
+            # source → call_site → 赋值 → sink 不变；函数体内的跨函数链仍由
+            # call_site → function → param（BUG N 承重边）保持。
             caller_assigns = assign_index.get((call_file, caller_name, call_line), [])
             for a_nid in caller_assigns:
-                for cfid in callee_fids:
-                    self.graph.add_edge(cfid, a_nid, edge_type=EDGE_DATA_FLOW)
+                self.graph.add_edge(nid, a_nid, edge_type=EDGE_DATA_FLOW)
 
         # ── Also connect callee_function directly to its parameter nodes ─
         # via DATA_FLOW edges, so BFS can traverse:
