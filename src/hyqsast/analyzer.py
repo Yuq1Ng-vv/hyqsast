@@ -181,6 +181,21 @@ class Analyzer:
         self._truncated_categories: dict[str, int] = {}
         # BUG 62: _callee_at_map 的惰性缓存（汇总阶段 _render_chain 复用）
         self._callee_at: dict[tuple[str, int], str] | None = None
+        # BUG 63 (性能): 规范版报告的 _function_block 每 finding 全文件扫节点找
+        # 函数区间 —— O(findings×文件节点)，网络x 节点查表慢（70k 调用链测到
+        # 几百小时）。两级缓存：
+        #   _function_ranges:  file_path → [(start_line, end_line)]（函数节点，
+        #                       惰性按文件建一次；同序迭代，与旧实现逐节点一致）
+        #   _function_range_cache: (file_path, line) → 最小包含函数区间或 None
+        #                        （同 sink 行被多 source 命中时 O(1) 复用）
+        self._function_ranges: dict[str, list[tuple[int, int]]] = {}
+        self._function_range_cache: dict[tuple[str, int], tuple[int, int] | None] = {}
+        # BUG 63 (性能): _render_chain 每 hop 调 _rel_path → Path.resolve() 每次
+        # 做文件系统 stat + relative_to 路径运算（22K findings 探针测到 148 万次
+        # lstat、~13s）。路径→相对路径在单次扫描内确定，按 path 缓存 + 目录
+        # resolve 只算一次。
+        self._rel_path_cache: dict[str, str] = {}
+        self._dir_resolved = Path(self.directory).resolve()
 
     # ── 入口 ────────────────────────────────────────────────────────────
 
@@ -855,25 +870,48 @@ class Analyzer:
         methods = "/".join(m.methods) or "ANY"
         return f"{methods} {m.route} @ {m.file_path}:{m.line} ({m.handler_func})"
 
+    def _function_ranges_for(self, file_path: str) -> list[tuple[int, int]]:
+        """返回 *file_path* 的所有函数区间 ``[(start_line, end_line)]``（惰性按文件缓存）。
+
+        BUG 63 (性能): 旧实现每条 finding 在 ``_function_block`` 里重扫该文件
+        全部节点（``_file_node_ids``）再过滤函数节点 —— 汇总阶段 O(findings×
+        文件节点)，且每个节点走 networkx 查表（46M 次查表 / 22K findings 探针）。
+        这里每文件只建一次：``_file_node_ids`` 保持原迭代顺序、过滤条件与
+        ``best`` 选取规则不变（同序下最小区间首胜），输出与旧实现逐字节一致。
+        """
+        cached = self._function_ranges.get(file_path)
+        if cached is not None:
+            return cached
+        out: list[tuple[int, int]] = []
+        for nid in self.graph_builder._file_node_ids(file_path):
+            data = self.graph_builder.graph.nodes[nid]
+            if data.get("node_type") != NODE_FUNCTION:
+                continue
+            start = data.get("start_line") or 0
+            end = data.get("end_line") or 0
+            if start and end:
+                out.append((start, end))
+        self._function_ranges[file_path] = out
+        return out
+
     def _function_block(self, node: NodeRef, label: str, vuln_type: str, margin: int = 5) -> str:
         """返回 *node* 所在函数的完整源码：带行号，node 行标 ``▶`` 并尾注类别。
 
         在图中找 ``file_path`` 相同且包含 node 行的函数节点（取范围最小者）；
         找不到时退化为 node 行 ±*margin* 行的窗口。
         """
-        best: tuple[int, int] | None = None
-        # BUG 62: 用文件索引（_file_node_ids，含 pickle 恢复回退）代替全图扫描
-        # —— 每条 finding 从 O(全图) 降到 O(本文件节点)。汇总阶段原先
-        # O(findings×全图节点)。
-        for nid in self.graph_builder._file_node_ids(node.file_path):
-            data = self.graph_builder.graph.nodes[nid]
-            if data.get("node_type") != NODE_FUNCTION:
-                continue
-            start = data.get("start_line") or 0
-            end = data.get("end_line") or 0
-            if start and end and start <= node.line <= end:
-                if best is None or (end - start) < (best[1] - best[0]):
-                    best = (start, end)
+        # BUG 63 (性能): 两级缓存 —— (file, line) 级 memo 让同 sink 行被多个
+        # source 命中的 finding O(1) 复用；miss 时只在文件函数区间小列表（而非
+        # 全部节点）上选最小包含区间。语义与旧实现完全一致（同序最小区间首胜）。
+        key = (node.file_path, node.line)
+        if key not in self._function_range_cache:
+            best: tuple[int, int] | None = None
+            for start, end in self._function_ranges_for(node.file_path):
+                if start <= node.line <= end:
+                    if best is None or (end - start) < (best[1] - best[0]):
+                        best = (start, end)
+            self._function_range_cache[key] = best
+        best = self._function_range_cache[key]
         if best is None:
             start, end = max(1, node.line - margin), node.line + margin
         else:
@@ -953,11 +991,20 @@ class Analyzer:
         return " -> ".join(parts)
 
     def _rel_path(self, path: str) -> str:
-        """返回相对扫描目录的路径；文件在目录外时退化为 basename。"""
+        """返回相对扫描目录的路径；文件在目录外时退化为 basename。
+
+        BUG 63 (性能): 结果按 path 缓存（单次扫描内确定），目录 resolve 已在
+        __init__ 预计算——原实现在 _render_chain 每 hop 都做 stat 系统调用。
+        """
+        cached = self._rel_path_cache.get(path)
+        if cached is not None:
+            return cached
         try:
-            return str(Path(path).resolve().relative_to(self.directory.resolve()))
+            out = str(Path(path).resolve().relative_to(self._dir_resolved))
         except (ValueError, OSError):
-            return Path(path).name
+            out = Path(path).name
+        self._rel_path_cache[path] = out
+        return out
 
     def _sink_categories(self, node_id: str) -> list[str]:
         """返回 sink 节点的所有类别（按逗号拆分）。
