@@ -645,8 +645,19 @@ class CPGGraphBuilder:
 
         # 3 — Build intra-file call graph and index call edges
         # BUG 15: Reuse already-parsed tree instead of re-parsing
-        cg = SingleFileCallGraph(self._parser)
-        cg.build_from_tree(tree, language, path)
+        # BUG 153 (性能): add_directory 的「索引文件」阶段已用同一文件同一语言
+        # 建过 SingleFileCallGraph（存在 _call_graph_builder._graphs[path]），
+        # 这里直接复用，省一趟 build_from_tree 全树遍历（perfprobe2 实测占
+        # graph.add_file 15.9%）。build_calls 只读 cg.edges 不变异（跨文件边是
+        # 独立新对象），复用后 step 3 逐边数据字节恒等。独立调用 add_file 时
+        # _call_graph_builder 为 None → 回退原地重建（旧行为）。
+        cg = None
+        cgb = getattr(self, "_call_graph_builder", None)
+        if cgb is not None:
+            cg = cgb._graphs.get(path)  # type: ignore[attr-defined]
+        if cg is None:
+            cg = SingleFileCallGraph(self._parser)
+            cg.build_from_tree(tree, language, path)
         for edge in cg.edges:
             cid = _uid(NODE_CALL_SITE, path, str(edge.call_line), edge.caller, edge.callee)
             self.graph.add_node(

@@ -107,13 +107,15 @@ class CallGraphBuilder:
         # so that `resolve_imports` can connect them via the file_index.
         # BUG N: Java 类型信息（receiver 收窄用）。非 Java 语言跳过 ——
         # Python/JS 保持裸名多目标全连（sound 过近似）。
+        # BUG 153 (性能): Java 下字段类型虚拟 import 与 var/method/class 类型
+        # 信息合并成单趟遍历（原两趟全树遍历）。
         if language == "java":
-            vt, mc, ce = self._extract_type_info(tree)
+            vt, mc, ce, virtual_types = self._extract_java_info(tree)
             self._var_types[path] = vt
             self._method_classes[path] = mc
             self._class_extends[path] = ce
-
-        virtual_types = self._extract_field_types(tree, language)
+        else:
+            virtual_types = self._extract_field_types(tree, language)
         for vt in virtual_types:
             # Only add if not already covered by a real import
             already_imported = any(vt in imp.names for imp in imports)
@@ -658,10 +660,10 @@ class CallGraphBuilder:
 
         return types
 
-    def _extract_type_info(
+    def _extract_java_info(
         self, tree: object
-    ) -> tuple[dict[str, str], dict[str, str], dict[str, set[str]]]:
-        """提取 Java 类型信息：var→简单类型、method→所属类、class→父类/接口。
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, set[str]], list[str]]:
+        """单趟遍历提取 Java 类型信息（BUG 153 性能：合并原两趟全树遍历）。
 
         receiver 收窄（BUG N）依赖三类信息：
         - 局部变量/参数/字段的**显式声明类型**（``ThingInterface thing = ...``）
@@ -669,12 +671,63 @@ class CallGraphBuilder:
           内部类方法记为内部类名，与 SingleFileCallGraph 的 qualified 名一致）
         - 每个类的**父类/接口名**（多态：``Shape s = new Circle()`` 时 Circle
           里声明的 draw 也要能匹配 Shape receiver）
+
+        同时收集字段类型名作虚拟 import（原 _extract_field_types 的 Java 分支，
+        ``private ReportParser reportParser;`` 让框架注入的依赖在无显式 import
+        时也可达）。
+
+        原实现 _extract_type_info + _extract_field_types 各走一趟 Traverser；
+        合并后 field_declaration 分支同时喂 var_types 与 virtual_types，其余
+        分支不变。遍历序一致 → 各输出与原分趟**逐元素字节恒等**。
         """
         from hyqsast.cpg.traversal import Traverser
 
         var_types: dict[str, str] = {}
         method_classes: dict[str, str] = {}
         class_extends: dict[str, set[str]] = {}
+
+        # 原 _extract_field_types 的过滤表：原始类型 + 常见容器名
+        # （容器名永远解析不到项目文件，作虚拟 import 无意义）
+        _primitives = {
+            "int",
+            "long",
+            "float",
+            "double",
+            "boolean",
+            "byte",
+            "short",
+            "char",
+            "void",
+            "String",
+            "Integer",
+            "Long",
+            "Float",
+            "Double",
+            "Boolean",
+            "Byte",
+            "Short",
+        }
+        _containers = {
+            "List",
+            "Map",
+            "Set",
+            "Collection",
+            "ArrayList",
+            "HashMap",
+            "HashSet",
+            "Optional",
+            "Array",
+            "Object",
+            "HttpServletRequest",
+            "HttpServletResponse",
+            "ServletRequest",
+            "ServletResponse",
+            "ServletException",
+            "IOException",
+        }
+        skip = _primitives | _containers
+        virtual_types: list[str] = []
+        seen: set[str] = set()
 
         def _simple_type(node: object) -> str | None:
             """从类型/父类/接口节点取简单类型名（剥掉泛型参数与包前缀）。
@@ -757,13 +810,26 @@ class CallGraphBuilder:
                         var_types[name_node.text.decode("utf-8")] = t
             elif ntype == "field_declaration":
                 tn = node.child_by_field_name("type")
-                if tn is not None:
-                    t = _simple_type(tn)
-                    if t:
-                        for name in _declared_names(node):
-                            var_types[name] = t
+                if tn is None:
+                    continue
+                t = _simple_type(tn)
+                if t:
+                    for name in _declared_names(node):
+                        var_types[name] = t
+                # 同时收集全部 type_identifier 后代作虚拟 import
+                # （含泛型实参：List<ReportProvider> → ReportProvider）
+                self_nodes = [tn]
+                while self_nodes:
+                    cur = self_nodes.pop()
+                    if cur.type == "type_identifier":
+                        name = cur.text.decode()
+                        if name not in skip and name not in seen:
+                            virtual_types.append(name)
+                            seen.add(name)
+                    for child in cur.children:
+                        self_nodes.append(child)
 
-        return var_types, method_classes, class_extends
+        return var_types, method_classes, class_extends, virtual_types
 
     def _resolve_module_path(
         self,
