@@ -9,6 +9,7 @@ See DESIGN-IMPLEMENTATION.md Section 2.4 for the interface specification.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -24,6 +25,198 @@ if TYPE_CHECKING:
     from hyqsast.cpg.types import FunctionNode
 
 from hyqsast.cpg.types import DataFlowStep, DefUsePair
+
+# ─── 流敏感重赋值杀毒 helper（BUG 152）──────────────────────────────────────
+
+# 复合/增强赋值算子。Python ``augmented_assignment``、JS
+# ``augmented_assignment_expression`` 是独立 node type；Java 则是
+# ``assignment_expression`` 子节点里的匿名算子 token（children[1]，命名算子
+# field 为 None）。复合赋值隐式读旧值（``x += y`` ≡ ``x = x + y``），恒为
+# 自引用 def——不可被当作杀毒 def，其链也要保留。
+_COMPOUND_ASSIGNMENT_OPS = frozenset(
+    {"+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>="}
+)
+
+# 「条件/循环门控」节点类型（per-language）。杀毒 def 必须与被杀 def 处于
+# 严格相同的门控上下文（直落，中间无 if/for/while/switch/catch/lambda），
+# 否则 Dk 是条件执行、不能杀 Di（Interrupt_005/007_T 护栏）。try/finally
+# 刻意**不**计入门控：ant 目标 FP 全在 try 块内直落，两 def 同在 try 仍同
+# 上下文可杀。门控越保守 = 越不误杀 FN。
+_GATE_TYPES: dict[str, frozenset[str]] = {
+    "java": frozenset(
+        {
+            "if_statement",
+            "for_statement",
+            "enhanced_for_statement",
+            "while_statement",
+            "do_statement",
+            "switch_expression",
+            "catch_clause",
+            "lambda_expression",
+        }
+    ),
+    "python": frozenset(
+        {
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "with_statement",
+            "try_statement",
+            "except_clause",
+        }
+    ),
+    "javascript": frozenset(
+        {
+            "if_statement",
+            "for_statement",
+            "for_in_statement",
+            "for_of_statement",
+            "while_statement",
+            "do_statement",
+            "switch_statement",
+            "catch_clause",
+            "arrow_function",
+        }
+    ),
+}
+
+
+def _loc_line(loc: str) -> int | None:
+    """从 ``file:line`` 位置串提取行号（rsplit 兼容 Windows 盘符冒号）。"""
+    try:
+        return int(loc.rsplit(":", 1)[-1])
+    except (ValueError, AttributeError):
+        return None
+
+
+def _is_compound_assignment(node: Node) -> bool:
+    """判断复合/增强赋值（``x += y`` 等，隐式读旧值）。
+
+    Python ``augmented_assignment`` / JS ``augmented_assignment_expression``
+    是独立 node type；Java ``assignment_expression`` 的算子是无名 token
+    （``child_by_field_name("operator")`` 为 None，children[1] 是算子）。
+    """
+    if node.type in ("augmented_assignment", "augmented_assignment_expression"):
+        return True
+    if node.type == "assignment_expression":
+        return any(not c.is_named and c.type in _COMPOUND_ASSIGNMENT_OPS for c in node.children)
+    return False
+
+
+def _assignment_rhs(node: Node) -> Node | None:
+    """返回赋值 def 节点的 RHS 子树，取不到返回 None。"""
+    right = node.child_by_field_name("right")
+    if right is not None:
+        return right
+    if node.type == "named_expression":  # Python 海象 ``x := expr``
+        return node.child_by_field_name("value")
+    if node.type == "local_variable_declaration":  # Java ``int x = ...``
+        for c in node.named_children:
+            if c.type == "variable_declarator":
+                return c.child_by_field_name("value")
+    if node.type == "variable_declarator":  # JS ``var x = ...``
+        return node.child_by_field_name("value")
+    return None
+
+
+def _is_plain_var_def(node: Node) -> bool:
+    """该赋值 def 是否**覆盖变量绑定**（LHS 是裸标识符）。
+
+    ``a.b = t`` / ``a[i] = t`` 是**字段/容器写**——改的是对象字段/元素，
+    不覆盖宿主变量 ``a`` 的引用绑定（漏报面 A 类字段状态写读正是靠把污点
+    写进宿主再接后续读取）。截断只对真变量重写生效，字段/容器写不得当
+    「杀毒 def」截断宿主链（BUG 152 回归修复：ant 别名维度 8 个 TP 曾因此
+    被误杀）。声明/增强 for/海象恒为新绑定。
+    """
+    if node.type in ("local_variable_declaration", "enhanced_for_statement", "variable_declarator"):
+        return True
+    if node.type == "named_expression":  # Python ``x := expr``
+        return True
+    if node.type in (
+        "assignment",
+        "augmented_assignment",
+        "assignment_expression",
+        "augmented_assignment_expression",
+    ):
+        left = node.child_by_field_name("left")
+        return left is not None and left.type == "identifier"
+    return False
+
+
+# 循环「后置位」字段（per-language）：cond/update 在 body **之后**求值（loop
+# backedge 可达），文本在前的 use 仍读得到后文 body 的 def；init 是前置位
+# （先于 body），照切。do-while 的 cond 恒在 body 后。Python for 无 cond/update。
+_LOOP_POST_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "java": {
+        "for_statement": ("condition", "update"),
+        "while_statement": ("condition",),
+        "do_statement": ("condition",),
+    },
+    "javascript": {
+        "for_statement": ("condition", "increment"),
+        "while_statement": ("condition",),
+        "do_statement": ("condition",),
+    },
+    "python": {"while_statement": ("condition",)},
+}
+
+
+def _loop_post_use(node: Node, language: str) -> bool:
+    """use 是否落在某个循环的 cond/update 后置位（backedge 可达）。
+
+    仅用于反向 use（行 < def 行）豁免：``for (;; exec(a)) { a = cmd; }`` 的
+    exec 在 update 位，语义上 body 之后执行，行序却更靠前，不能切
+    （ForStatement_update_001_T 真漏洞）。init/body 前置位照切
+    （ForStatement_init_002_F 假阳性）。
+    """
+    fields = _LOOP_POST_FIELDS.get(language, {})
+    cur = node.parent
+    while cur is not None:
+        names = fields.get(cur.type)
+        if names:
+            for f in names:
+                fld = cur.child_by_field_name(f)
+                if (
+                    fld is not None
+                    and fld.start_byte <= node.start_byte
+                    and node.end_byte <= fld.end_byte
+                ):
+                    return True
+        cur = cur.parent
+    return False
+
+
+_EMPTY_FSET: frozenset[int] = frozenset()
+
+
+def _catch_try_ranges(node: Node) -> frozenset[int]:
+    """use 所在的所有 catch_clause 对应 try_statement 的 start_byte 集合。
+
+    try 体内 def 无法保证在进入 catch 前已执行（异常可能在其前抛起、跳过该
+    def），故不得截断 catch 内 use（TryStatement_001_T 真漏洞：``data[15]``
+    先抛异常，``cmd = ""`` 永不执行，catch 里 exec(cmd) 仍是污染参数）。
+    """
+    ranges: set[int] = set()
+    cur = node.parent
+    while cur is not None:
+        if cur.type == "catch_clause":
+            parent = cur.parent
+            if parent is not None and parent.type == "try_statement":
+                ranges.add(parent.start_byte)
+        cur = cur.parent
+    return _EMPTY_FSET if not ranges else frozenset(ranges)
+
+
+def _def_try_ranges(node: Node) -> frozenset[int]:
+    """def 所在的全部 try_statement 的 start_byte 集合（供 catch 保护判断）。"""
+    ranges: set[int] = set()
+    cur = node.parent
+    while cur is not None:
+        if cur.type == "try_statement":
+            ranges.add(cur.start_byte)
+        cur = cur.parent
+    return frozenset(ranges)
+
 
 # ─── Helper: location string ───────────────────────────────────────────────
 
@@ -119,7 +312,10 @@ class DataFlowBuilder:
         # sorted），故字节恒等。单文件两遍子树遍历 → 一遍，减半 def-use 的
         # AST 行走成本（大文件上占建图可观份额）。
         assignments: list[_Assign] = []
-        var_uses: dict[str, list[str]] = {}
+        # 每个 use 记录 (位置串, 循环后置位?, catch→try 集合)。后两维是 BUG 152
+        # 流敏感截断的豁免信息，graph.py / analyzer.py 读不到（use_locations
+        # 仍是纯 str 列表），零外部影响。
+        var_uses: dict[str, list[tuple[str, bool, frozenset[int]]]] = {}
         for node in _body_nodes():
             if node.type in assign_types:
                 target = provider.extract_assignment_target(node)
@@ -139,7 +335,9 @@ class DataFlowBuilder:
                 var_name = _source(node)
                 if var_name not in var_uses:
                     var_uses[var_name] = []
-                var_uses[var_name].append(_loc(node, file_path))
+                var_uses[var_name].append(
+                    (_loc(node, file_path), _loop_post_use(node, language), _catch_try_ranges(node))
+                )
 
         # Phase 1.5 — collect parameter definitions (implicit assignments at
         # function entry).  This is critical for taint tracking: annotations
@@ -163,14 +361,78 @@ class DataFlowBuilder:
                     )
                 )
 
-        # Associate each assignment with its uses (skip the definition site itself)
+        # BUG 152: 流敏感重赋值杀毒——每个 def 的 use 窗口截断到「本 def 行 ~
+        # 下一个**杀毒 def** 行」。越界的 use 读的是杀毒 def 的值，前一个 def
+        # 的污点不得穿过重赋值（``x = 源派生; x = 固定值; sink(x)``，ant 基础
+        # 表达式/flow_sensitive 最大 FP 集群）。纯收窄：只删 def→use 边，不增
+        # 边（真实项目放大风险为零）。护栏保零 FN（ant 首轮回归丢 10 TP 后补
+        # 全的）：
+        #   ① 自引用 def（``x = x + y`` / ``x += y``）读旧值——链保留且被越过；
+        #   ② 杀毒 def 须与 Di 门控上下文严格相同（含 if 分支位：then/else 是
+        #      互斥路径不能互杀，MayTaintKind_001_T）——Interrupt_005/007_T；
+        #   ③ 反向 use 仅切裸变量重写 def 的前向不可达 use；循环后置位
+        #      （for-update / cond / do-cond）backedge 可达豁免
+        #      （ForStatement_update_001_T）；字段/容器写 def 的**自身**反向
+        #      use 也保留（堆对象变异，宿主早期别名/拷贝同样读到——别名维 TP）；
+        #   ④ 字段/容器写（``a.b=``/``a[i]=``）不覆盖宿主绑定、不构成杀毒 def
+        #      （别名维 8 个 TP）；
+        #   ⑤ 杀毒 def 在 try 体内、use 在同 try 的 catch 内时保护（异常路径
+        #      可能跳过杀毒 def，TryStatement_001_T）。
+        # 下界用 ``assign.line <= 行(u)`` 再叠 ``_loc_matches_def``（BUG 41：
+        # enhanced_for 单行 body use 与循环头同行须保留，不能用严格 <）。
+        self_refs = [self._is_self_referencing(a, provider, tree) for a in assignments]
+        gate_ctxs = [self._gate_context(a.node, language) for a in assignments]
+        plain_defs = [_is_plain_var_def(a.node) for a in assignments]
+        def_trys = [_def_try_ranges(a.node) for a in assignments]
+        by_var: dict[str, list[int]] = defaultdict(list)
+        for i, a in enumerate(assignments):
+            by_var[a.var_name].append(i)
+        for idxs in by_var.values():
+            idxs.sort(key=lambda i: assignments[i].line)
+
         results: list[DefUsePair] = []
-        for assign in assignments:
-            use_locations = [
-                loc
-                for loc in var_uses.get(assign.var_name, [])
-                if not self._loc_matches_def(loc, assign.node, file_path)
-            ]
+        for i, assign in enumerate(assignments):
+            # bound = 首个「杀毒 def」（裸变量重写、非自引用、门控严格相同）
+            # 行。字段/容器写与自引用 def 不构成无条件重写点，直接越过。
+            # bound_trys = **杀毒 def** 所在的 try 集合（护栏⑤ catch 保护要
+            # 的是杀毒 def 的成员资格——param def 在 try 外、杀毒 def 在内）。
+            bound: int | None = None
+            bound_trys: frozenset[int] = _EMPTY_FSET
+            for j in by_var.get(assign.var_name, ()):
+                if j == i or assignments[j].line <= assign.line:
+                    continue
+                if not plain_defs[j]:
+                    continue  # 护栏④：字段/容器写不覆盖绑定
+                if self_refs[j]:
+                    continue  # 护栏①：自引用读旧值，不杀
+                if gate_ctxs[j] == gate_ctxs[i]:
+                    bound = assignments[j].line
+                    bound_trys = def_trys[j]
+                    break
+
+            use_locations: list[str] = []
+            for loc, loop_post, catch_trys in var_uses.get(assign.var_name, ()):
+                if self._loc_matches_def(loc, assign.node, file_path):
+                    continue  # BUG 41: enhanced_for 同行 use 保留
+                u_line = _loc_line(loc)
+                if u_line is None:
+                    continue
+                if u_line < assign.line:
+                    # 护栏③：反向 use 仅切「裸变量重写」def 的前向不可达 use；
+                    # 循环后置位（for-update/cond）是 backedge 可达（豁免，
+                    # ForStatement_update_001_T）。字段/容器写 def 是堆对象变异
+                    # （``a.b=cmd`` 改字段不改绑定），宿主对象身份与行序无关，
+                    # 早期别名/拷贝（``newSimpleLinkedList(a)``）同样读到变异
+                    # → 反向 use 保留（ant 别名维 TP 依赖写 def 反向接到宿主
+                    # 早期 use）。
+                    if plain_defs[i] and not loop_post:
+                        continue
+                elif bound is not None and u_line >= bound:
+                    # 护栏⑤：杀毒 def 在 try 体内、use 在同 try 的 catch 内时，
+                    # 异常路径可能跳过杀毒 def → 保留链（TryStatement_001_T）。
+                    if not (bound_trys and (catch_trys & bound_trys)):
+                        continue  # 越过杀毒 def，归下一个 def 的窗口
+                use_locations.append(loc)
 
             results.append(
                 DefUsePair(
@@ -426,6 +688,61 @@ class DataFlowBuilder:
             return False
         def_loc = _loc(def_node, file_path)
         return loc == def_loc
+
+    def _is_self_referencing(self, assign: _Assign, provider, tree) -> bool:
+        """True 当该 def 读取了变量的旧值（自引用），不可当杀毒 def。
+
+        复合赋值恒读旧值；``x = expr`` 仅在 RHS 提及 x 时读旧值（``x = x + y``
+        的旧污点合法流入新值，链须保留）。注意 ``_identifiers_in`` 的
+        ``exclude`` 按**名字**过滤，会把 RHS 同名 occurrence 也滤掉，故检测
+        必须对 RHS 子树调用且**不传** exclude。参数 def（node=func_node）RHS
+        为 None → False（参数是函数入口的真 def，可杀内体重赋值）。
+        """
+        if _is_compound_assignment(assign.node):
+            return True
+        rhs = _assignment_rhs(assign.node)
+        if rhs is None:
+            return False
+        return assign.var_name in self._identifiers_in(rhs, provider, tree)
+
+    def _gate_context(
+        self, node: Node, language: str
+    ) -> frozenset[tuple[str, int, int, str, int, int]]:
+        """该 def 的外层「条件/循环门控」链身份。
+
+        杀毒 def Dk 只有在与被杀 def Di 门控严格相同（直落，中间无 if/for/
+        while/switch/catch/lambda）时才是无条件重写——内层嵌套的 Dk 是条件
+        执行，不能杀 Di（Interrupt_005/007_T 护栏：``a=cmd+"|"`` 在 for 体内、
+        ``a="ls"`` 在 if 内，上下文不同 → 不杀 → TP 保留）。以 (type,
+        start_byte, end_byte) 区分兄弟同型语句（两个并列 if 判为不同上下文，
+        不误杀）。
+
+        元组含**下降子节点身份** (child_type, child_start, child_end)：同一
+        门控节点内不同分支的子块 byte 区间不同，使 then/else 分支、不同 case
+        臂判为不同上下文——跨分支 def 是**互斥路径**不是顺序覆盖，不能互杀
+        （MayTaintKind_001_T 真漏洞：if 分支 ``sql=...name`` 被 else 分支
+        ``sql=...zhangsan`` 错杀）。同 body 内顺序 def 子节点相同 → 仍可杀。
+        参数 def（node=func_node）无祖先门控 → 空集。
+        """
+        gates = _GATE_TYPES.get(language, _GATE_TYPES["java"])
+        ctx: set[tuple[str, int, int, str, int, int]] = set()
+        child = node
+        cur = node.parent
+        while cur is not None:
+            if cur.type in gates:
+                ctx.add(
+                    (
+                        cur.type,
+                        cur.start_byte,
+                        cur.end_byte,
+                        child.type,
+                        child.start_byte,
+                        child.end_byte,
+                    )
+                )
+            child = cur
+            cur = cur.parent
+        return frozenset(ctx)
 
     def _fn_to_node(self, fn: FunctionNode, tree: Tree) -> Node | None:
         """Convert a FunctionNode (dataclass) back to a tree-sitter Node.
