@@ -81,6 +81,15 @@ _GATE_TYPES: dict[str, frozenset[str]] = {
 }
 
 
+# switch 的分支臂节点类型（Java 的 statement 形态 switch 在 tree-sitter-java 里
+# 也是 switch_expression，直子是纯结构壳 switch_block，真正的互斥臂是
+# switch_block_statement_group——跨 case 的 def 是互斥路径不是顺序覆盖，不能互杀
+# （BUG 152 补丁 OWASP BenchmarkTest00092/00108 FN：case C 的 ``bar=param`` 被
+# default 的 ``bar="bobs_your_uncle"`` 错杀）。python 无 switch，_SWITCH_CASE_TYPES
+# 只由 switch 门控路径触发，match 语句的 case 不受影响。
+_SWITCH_CASE_TYPES: frozenset[str] = frozenset({"switch_block_statement_group", "switch_case"})
+
+
 def _loc_line(loc: str) -> int | None:
     """从 ``file:line`` 位置串提取行号（rsplit 兼容 Windows 盘符冒号）。"""
     try:
@@ -730,19 +739,41 @@ class DataFlowBuilder:
         cur = node.parent
         while cur is not None:
             if cur.type in gates:
+                arm = child
+                # BUG 152 补丁：switch 门控的直子 switch_block 是纯结构壳，对
+                # 所有 case 都相同——分支身份须下探到互斥臂（switch_block_
+                # statement_group），否则 default 的 def 会顺序杀 case 的 def
+                # （OWASP BenchmarkTest00092/00108：case C ``bar=param`` 被
+                # default ``bar="bobs_your_uncle"`` 错杀 → FN）。
+                if cur.type in ("switch_expression", "switch_statement"):
+                    arm = self._switch_case_arm(node, cur) or child
                 ctx.add(
                     (
                         cur.type,
                         cur.start_byte,
                         cur.end_byte,
-                        child.type,
-                        child.start_byte,
-                        child.end_byte,
+                        arm.type,
+                        arm.start_byte,
+                        arm.end_byte,
                     )
                 )
             child = cur
             cur = cur.parent
         return frozenset(ctx)
+
+    @staticmethod
+    def _switch_case_arm(node: Node, gate: Node) -> Node | None:
+        """返回 *node* 在 *gate* 内的互斥 case 臂祖先（switch_block_statement_group）。
+
+        找不到（def 直接落在 switch_block 里、非任何 case 臂，语法上罕见）返回
+        None，由调用方回退到门控直子。
+        """
+        cur = node.parent
+        while cur is not None and cur != gate:
+            if cur.type in _SWITCH_CASE_TYPES:
+                return cur
+            cur = cur.parent
+        return None
 
     def _fn_to_node(self, fn: FunctionNode, tree: Tree) -> Node | None:
         """Convert a FunctionNode (dataclass) back to a tree-sitter Node.
